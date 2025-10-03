@@ -1,4 +1,7 @@
-# Fledge - Volant Plugin Builder
+<div align="center">
+  <img src="banner.png" alt="Fledge" width="600"/>
+  <h1>Fledge - Volant Plugin Builder</h1>
+</div>
 
 **Fledge** is a production-grade command-line tool for building Volant plugin artifacts. It provides a simple, declarative interface for creating bootable filesystem images and initramfs archives for the [Volant](https://github.com/volantvm/volant) microVM orchestration engine.
 
