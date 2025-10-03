@@ -1,0 +1,48 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+fledge
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.txt
+coverage.html
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Dependency directories
+vendor/
+
+# Build artifacts
+bin/
+dist/
+build/
+*.img
+*.cpio.gz
+*.squashfs
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Temporary files
+/tmp/
+*.tmp
+*.log
+
+# Test fixtures
+testdata/temp/
+testdata/*.img
+testdata/*.cpio.gz
