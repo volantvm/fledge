@@ -1,0 +1,44 @@
+# OCI Rootfs Plugin: Python Flask Application
+#
+# This example shows how to package a Python Flask web application.
+#
+# Project structure:
+#   flask-app/
+#   ├── fledge.toml (this file)
+#   └── payload/
+#       ├── app/
+#       │   ├── server.py
+#       │   └── requirements.txt
+#       ├── static/
+#       │   └── style.css
+#       └── templates/
+#           └── index.html
+#
+# The python:3.11-alpine base image includes Python and pip.
+# You may want to create a custom Dockerfile first that installs your dependencies.
+
+version = "1"
+strategy = "oci_rootfs"
+
+[source]
+# Option 1: Use official Python image
+image = "python:3.11-alpine"
+
+# Option 2: Use your custom image with dependencies pre-installed
+# image = "myregistry.com/myapp:v1.0"
+
+[filesystem]
+type = "ext4"
+size_buffer_mb = 150
+preallocate = false
+
+[mappings]
+# Application code
+"payload/app" = "/opt/app"
+
+# Web assets
+"payload/static" = "/var/www/static"
+"payload/templates" = "/var/www/templates"
+
+# Optional: Configuration files
+# "configs/app.yaml" = "/etc/flask-app/config.yaml"

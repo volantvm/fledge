@@ -1,0 +1,27 @@
+# Initramfs Plugin: Rust Microservice
+#
+# This example packages a Rust microservice as an initramfs plugin.
+#
+# Build your Rust app as a static binary:
+#   cargo build --release --target x86_64-unknown-linux-musl
+#   cp target/x86_64-unknown-linux-musl/release/my-service payload/my-service
+#
+# Static linking is important for initramfs since there's no dynamic linker.
+
+version = "1"
+strategy = "initramfs"
+
+[agent]
+source_strategy = "release"
+version = "latest"
+
+[source]
+busybox_url = "https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"
+busybox_sha256 = "6e123e7f3202a8c1e9b1f94d8941580a25135382b99e8d3e34fb858bba311348"
+
+[mappings]
+"payload/my-service" = "/usr/bin/my-service"
+"payload/config.toml" = "/etc/my-service/config.toml"
+
+# Optional: Add TLS certificates if your service uses HTTPS
+# "certs/ca-cert.pem" = "/etc/ssl/certs/ca-cert.pem"

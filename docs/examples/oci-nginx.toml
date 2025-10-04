@@ -1,0 +1,22 @@
+# OCI Rootfs Plugin: Nginx Web Server
+#
+# This example converts the official Nginx Alpine image to a Volant plugin.
+# The result is a bootable ext4 filesystem image with Nginx and the kestrel agent.
+#
+# Optional: Customize Nginx by mapping your own nginx.conf
+
+version = "1"
+strategy = "oci_rootfs"
+
+[source]
+image = "nginx:alpine"
+
+[filesystem]
+type = "ext4"
+size_buffer_mb = 100
+preallocate = false
+
+# Optional: Add custom configuration
+# [mappings]
+# "configs/nginx.conf" = "/etc/nginx/nginx.conf"
+# "configs/ssl/" = "/etc/nginx/ssl/"

@@ -1,0 +1,22 @@
+# OCI Rootfs Plugin: PostgreSQL Database
+#
+# This example creates a PostgreSQL plugin from the official Postgres Alpine image.
+# 
+# Note: Databases may require persistent storage configuration at runtime.
+# This creates the base image; Volant handles volume mounting and persistence.
+
+version = "1"
+strategy = "oci_rootfs"
+
+[source]
+image = "postgres:15-alpine"
+
+[filesystem]
+type = "ext4"
+size_buffer_mb = 200  # Larger buffer for database binaries
+preallocate = false
+
+[mappings]
+# Optional: Add custom initialization scripts or configurations
+# "init-scripts/01-init.sql" = "/docker-entrypoint-initdb.d/01-init.sql"
+# "configs/postgresql.conf" = "/etc/postgresql/postgresql.conf"
