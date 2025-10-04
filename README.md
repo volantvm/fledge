@@ -1,16 +1,112 @@
-<div align="center">
-  <img src="banner.png" alt="Fledge" width="600"/>
-  <h1>Fledge: The Volant Plugin Toolkit</h1>
-  <p><strong>Your complete guide to building production-ready Volant plugins</strong></p>
-</div>
+# Fledge
+
+**The Volant Plugin Builder**
+
+Fledge converts applications into bootable Volant plugins. Feed it an OCI image or custom binaries, get back a plugin ready to deploy.
+
+> **Example Plugin**: See [caddy-plugin](https://github.com/volantvm/caddy-plugin) for a complete working example with GitHub Actions CI/CD.
 
 ---
 
-## Welcome to Fledge
+## What It Does
 
-Fledge is your toolkit for creating plugins that run on [Volant](https://github.com/volantvm/volant), the next-generation microVM orchestration engine. Whether you're packaging a web server, a database, or a custom application, Fledge transforms your software into lightweight, bootable artifacts that Volant can deploy in milliseconds.
+```bash
+# Option 1: Convert an OCI image to a bootable disk image
+$ cat fledge.toml
+[plugin]
+name = "nginx"
+strategy = "oci_rootfs"
 
-This guide will walk you through everything you need to know to build your first plugin and become proficient in Volant plugin development.
+[oci_source]
+image = "docker.io/library/nginx:alpine"
+
+$ fledge build
+✓ Downloaded NGINX Alpine image
+✓ Installed kestrel agent  
+✓ Created bootable ext4 image (85 MB)
+✓ Generated plugin manifest
+
+# Option 2: Build a custom initramfs appliance
+$ cat fledge.toml
+[plugin]
+name = "caddy"
+strategy = "initramfs"
+
+[[file_mappings]]
+source = "./caddy_linux_amd64"
+dest = "/usr/local/bin/caddy"
+mode = 0o755
+
+$ fledge build
+✓ Created minimal initramfs (12 MB)
+✓ Plugin ready to deploy
+```
+
+---
+
+## Two Build Strategies
+
+### OCI Rootfs — Docker Compatibility
+
+**What**: Converts Docker/OCI images to bootable disk images  
+**Use for**: Existing Docker images, complex dependencies  
+**Output**: `.img` file (ext4/xfs/btrfs)  
+**Size**: 50 MB - 2 GB
+
+### Initramfs — High Performance
+
+**What**: Builds custom RAM-only appliances  
+**Use for**: Custom apps, stateless services, edge computing  
+**Output**: `.cpio.gz` file  
+**Size**: 5-50 MB
+
+---
+
+## Quick Start
+
+### Install
+
+```bash
+# Install fledge
+curl -fsSL https://fledge.sh/install | bash
+
+# Or download from releases
+curl -LO https://github.com/volantvm/fledge/releases/latest/download/fledge-linux-amd64
+chmod +x fledge-linux-amd64
+sudo mv fledge-linux-amd64 /usr/local/bin/fledge
+```
+
+### Build Your First Plugin
+
+```bash
+mkdir my-plugin && cd my-plugin
+
+cat > fledge.toml <<'EOF'
+[plugin]
+name = "nginx"
+version = "1.0.0"
+strategy = "oci_rootfs"
+
+[oci_source]
+image = "nginx:alpine"
+
+[filesystem]
+type = "ext4"
+EOF
+
+fledge build
+
+# Output: nginx-rootfs.img + nginx.manifest.json
+```
+
+### Deploy to Volant
+
+```bash
+volar plugins install --manifest nginx.manifest.json
+volar vms create web --plugin nginx
+```
+
+Done! Your NGINX VM is running.
 
 ## Table of Contents
 
