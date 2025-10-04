@@ -1,0 +1,12 @@
+version = "1"
+strategy = "initramfs"
+
+[init]
+path = "/usr/bin/test"
+
+[source]
+busybox_url = "https://github.com/shutingrz/busybox-static-binaries-fat/raw/refs/heads/main/busybox-x86_64-linux-gnu"
+busybox_sha256 = "5c566ba50a12d8020a391346575534e818a1f5b6f729a53b7b241262fe1d1b4e"
+
+[mappings]
+"README.md" = "/etc/readme.txt"

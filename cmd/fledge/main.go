@@ -31,6 +31,7 @@ var (
 
 func main() {
 	if err := newRootCommand().Execute(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -182,6 +183,7 @@ func loadConfig(configPath string) (*config.Config, error) {
 	// Parse configuration
 	cfg, err := config.Load(configPath)
 	if err != nil {
+		logging.Error("Failed to load configuration", "error", err)
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 
