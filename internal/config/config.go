@@ -37,8 +37,12 @@ func Load(path string) (*Config, error) {
 // applyDefaults applies default values for optional fields.
 func applyDefaults(cfg *Config) error {
 	// Apply default agent config for initramfs if not provided
+	// Only apply default agent in "default" init mode, not for custom or none modes
 	if cfg.Strategy == StrategyInitramfs && cfg.Agent == nil {
-		cfg.Agent = DefaultAgentConfig()
+		initMode := getInitMode(cfg)
+		if initMode == "default" {
+			cfg.Agent = DefaultAgentConfig()
+		}
 	}
 
 	// Apply default filesystem config for oci_rootfs if not provided
