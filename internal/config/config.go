@@ -132,11 +132,72 @@ func validateInitramfs(cfg *Config) error {
 		return fmt.Errorf("'source.busybox_url' is required for initramfs strategy")
 	}
 
-	if cfg.Agent == nil {
-		return fmt.Errorf("'agent' section is required for initramfs strategy")
+	// Validate init configuration
+	if err := validateInitConfig(cfg); err != nil {
+		return err
 	}
 
-	return validateAgentConfig(cfg.Agent)
+	// Agent validation depends on init mode
+	initMode := getInitMode(cfg)
+	
+	switch initMode {
+	case "default":
+		// Default mode requires agent
+		if cfg.Agent == nil {
+			return fmt.Errorf("'agent' section is required for default init mode (no [init] section)")
+		}
+		return validateAgentConfig(cfg.Agent)
+		
+	case "custom":
+		// Custom init mode - agent not allowed
+		if cfg.Agent != nil {
+			return fmt.Errorf("'agent' section cannot be specified with custom init mode ([init] path set)")
+		}
+		
+	case "none":
+		// None mode - agent not allowed
+		if cfg.Agent != nil {
+			return fmt.Errorf("'agent' section cannot be specified with no-init mode ([init] none=true)")
+		}
+	}
+
+	return nil
+}
+
+// getInitMode determines the init mode from the config.
+func getInitMode(cfg *Config) string {
+	if cfg.Init == nil {
+		return "default"
+	}
+	if cfg.Init.None {
+		return "none"
+	}
+	if cfg.Init.Path != "" {
+		return "custom"
+	}
+	return "default"
+}
+
+// validateInitConfig validates the [init] section.
+func validateInitConfig(cfg *Config) error {
+	if cfg.Init == nil {
+		return nil // Default mode is valid
+	}
+
+	// Validate none and path are mutually exclusive
+	if cfg.Init.None && cfg.Init.Path != "" {
+		return fmt.Errorf("[init] cannot specify both none=true and path")
+	}
+
+	// Validate custom init path
+	if cfg.Init.Path != "" {
+		// Path must be absolute
+		if !filepath.IsAbs(cfg.Init.Path) {
+			return fmt.Errorf("[init] path must be absolute (start with /), got: %s", cfg.Init.Path)
+		}
+	}
+
+	return nil
 }
 
 // validateAgentConfig validates the agent configuration.

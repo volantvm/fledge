@@ -6,9 +6,20 @@ type Config struct {
 	Version    string            `toml:"version"`
 	Strategy   string            `toml:"strategy"`
 	Agent      *AgentConfig      `toml:"agent,omitempty"`
+	Init       *InitConfig       `toml:"init,omitempty"`       // Init configuration (default, custom, or none)
 	Source     SourceConfig      `toml:"source"`
 	Filesystem *FilesystemConfig `toml:"filesystem,omitempty"`
 	Mappings   map[string]string `toml:"mappings,omitempty"`
+}
+
+// InitConfig defines init/PID1 behavior for initramfs.
+// Three modes:
+// 1. Default (nil or empty): C init → Kestrel (batteries-included)
+// 2. Custom (Path set): C init → your custom init script/binary
+// 3. None (None=true): Your payload becomes PID 1 directly (no wrapper)
+type InitConfig struct {
+	Path string `toml:"path,omitempty"` // Path to custom init (mode 2)
+	None bool   `toml:"none,omitempty"` // Skip init wrapper entirely (mode 3)
 }
 
 // AgentConfig defines how to source the kestrel agent binary.

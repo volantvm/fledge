@@ -1,0 +1,17 @@
+# Mode 2: Custom Init
+# For the lazy genius who needs ONE custom thing
+# C init → Your custom init → Your app
+
+version = "1"
+strategy = "initramfs"
+
+[init]
+path = "/usr/local/bin/my-init.sh"
+
+[source]
+busybox_url = "https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"
+busybox_sha256 = "6e123e7f3202a8c1e9b1f94d8941580a25135382b99e8d3e34fb858bba311348"
+
+[mappings]
+"./my-init.sh" = "/usr/local/bin/my-init.sh"
+"./redis-server" = "/usr/bin/redis-server"

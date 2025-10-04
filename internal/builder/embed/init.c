@@ -1,5 +1,5 @@
 // init.c - Minimal C init for Volant initramfs
-// This init sets up the basic Linux environment and hands off to kestrel.
+// This init sets up the basic Linux environment and hands off to kestrel or custom entrypoint.
 #define _GNU_SOURCE
 #include <unistd.h>
 #include <errno.h>
@@ -68,12 +68,44 @@ static void mount_filesystems(void) {
         panic("mount(/run)");
 }
 
+// Read custom init path from /.volant_init file (if present)
+// Returns the path to exec, or NULL for default kestrel
+static const char* read_custom_init(void) {
+    FILE *f = fopen("/.volant_init", "r");
+    if (!f) {
+        return NULL; // File doesn't exist, use default kestrel
+    }
+
+    static char path_buf[4096];
+    if (!fgets(path_buf, sizeof(path_buf), f)) {
+        fclose(f);
+        return NULL;
+    }
+
+    // Strip newline
+    size_t len = strlen(path_buf);
+    if (len > 0 && path_buf[len-1] == '\n')
+        path_buf[len-1] = '\0';
+    
+    fclose(f);
+    
+    // Skip if empty
+    if (path_buf[0] == '\0')
+        return NULL;
+
+    return path_buf;
+}
+
 int main(int argc, char *argv[]) {
     // Create a basic directory structure first
     mkdir("/proc", 0755);
     mkdir("/sys", 0755);
     mkdir("/dev", 0755);
-    mkdir("/bin", 0755); // For kestrel
+    mkdir("/bin", 0755);
+    mkdir("/usr", 0755);
+    mkdir("/usr/bin", 0755);
+    mkdir("/usr/local", 0755);
+    mkdir("/usr/local/bin", 0755);
 
     // Set up the essential filesystems
     mount_filesystems();
@@ -81,10 +113,22 @@ int main(int argc, char *argv[]) {
     // Now that /dev is mounted, ensure we have a console
     ensure_console();
 
-    printf("C INIT: Basic environment is up. Handing off to kestrel...\n");
+    printf("C INIT: Basic environment ready (/proc /sys /dev /tmp /run mounted)\n");
 
-    // Hand over control to our real Go init program.
-    // This will now become the new PID 1.
+    // Check if custom init path is specified
+    const char *custom_init = read_custom_init();
+    
+    if (custom_init) {
+        printf("C INIT: Handing off to custom init: %s\n", custom_init);
+        char *const custom_argv[] = {(char*)custom_init, NULL};
+        execv(custom_init, custom_argv);
+        // If we reach here, exec failed
+        fprintf(stderr, "C INIT: Failed to exec custom init %s: %s\n", custom_init, strerror(errno));
+        panic("execv(custom init)");
+    }
+
+    // Default behavior: hand off to kestrel
+    printf("C INIT: Handing off to Kestrel agent...\n");
     char *const kestrel_argv[] = {"/bin/kestrel", NULL};
     execv("/bin/kestrel", kestrel_argv);
 

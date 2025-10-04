@@ -111,6 +111,22 @@ volar vms create demo --plugin myapp
 
 ---
 
+## Init Modes
+
+Fledge supports three init modes for initramfs. See [docs/init-modes.md](docs/init-modes.md) for complete details.
+
+**The Ladder of Laziness:**
+1. **Default (no `[init]` section)** — Batteries-included: C init + Kestrel agent (90% of users)
+2. **Custom (`[init] path = "..."`** — C init + your custom init script
+3. **No wrapper (`[init] none = true`)** — Your binary is PID 1 (maximum performance)
+
+**Examples:**
+- [Mode 1: Default](docs/examples/mode1-default.toml)
+- [Mode 2: Custom Init](docs/examples/mode2-custom-init.toml)
+- [Mode 3: No Init](docs/examples/mode3-no-init.toml)
+
+---
+
 ## Tips
 
 - **Static binaries** for initramfs (`CGO_ENABLED=0`)

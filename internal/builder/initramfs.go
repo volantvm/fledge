@@ -58,16 +58,38 @@ func (b *InitramfsBuilder) Build() error {
 		return fmt.Errorf("failed to setup directory structure: %w", err)
 	}
 
-	if err := b.compileInit(); err != nil {
-		return fmt.Errorf("failed to compile init: %w", err)
+	// Determine init mode and handle accordingly
+	initMode := b.getInitMode()
+	logging.Info("Init mode detected", "mode", initMode)
+
+	switch initMode {
+	case "default":
+		// Mode 1: C init + Kestrel (batteries-included)
+		if err := b.compileInit(); err != nil {
+			return fmt.Errorf("failed to compile init: %w", err)
+		}
+		if err := b.installAgent(); err != nil {
+			return fmt.Errorf("failed to install agent: %w", err)
+		}
+
+	case "custom":
+		// Mode 2: C init + custom init script/binary
+		if err := b.compileInit(); err != nil {
+			return fmt.Errorf("failed to compile init: %w", err)
+		}
+		if err := b.writeCustomInitPath(); err != nil {
+			return fmt.Errorf("failed to write custom init path: %w", err)
+		}
+		logging.Info("Custom init configured", "path", b.Config.Init.Path)
+
+	case "none":
+		// Mode 3: No init wrapper - user's binary becomes PID 1
+		logging.Info("No init wrapper - user binary will be PID 1")
+		// Skip compileInit() and installAgent()
 	}
 
 	if err := b.installBusybox(); err != nil {
 		return fmt.Errorf("failed to install busybox: %w", err)
-	}
-
-	if err := b.installAgent(); err != nil {
-		return fmt.Errorf("failed to install agent: %w", err)
 	}
 
 	if err := b.applyMappings(); err != nil {
@@ -382,5 +404,36 @@ func (b *InitramfsBuilder) createArchive() error {
 	}
 
 	logging.Info("Archive created successfully", "output", b.OutputPath)
+	return nil
+}
+
+// getInitMode determines which init mode is configured.
+// Returns "default", "custom", or "none".
+func (b *InitramfsBuilder) getInitMode() string {
+	if b.Config.Init == nil {
+		return "default"
+	}
+	if b.Config.Init.None {
+		return "none"
+	}
+	if b.Config.Init.Path != "" {
+		return "custom"
+	}
+	return "default"
+}
+
+// writeCustomInitPath writes the custom init path to /.volant_init
+// so the C init knows what to exec.
+func (b *InitramfsBuilder) writeCustomInitPath() error {
+	logging.Debug("Writing custom init path", "path", b.Config.Init.Path)
+	
+	initFilePath := filepath.Join(b.RootfsDir, ".volant_init")
+	content := b.Config.Init.Path + "\n"
+	
+	if err := os.WriteFile(initFilePath, []byte(content), 0644); err != nil {
+		return fmt.Errorf("failed to write .volant_init: %w", err)
+	}
+	
+	logging.Debug("Custom init path written")
 	return nil
 }
