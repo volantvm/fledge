@@ -139,7 +139,7 @@ func validateInitramfs(cfg *Config) error {
 
 	// Agent validation depends on init mode
 	initMode := getInitMode(cfg)
-	
+
 	switch initMode {
 	case "default":
 		// Default mode requires agent
@@ -147,13 +147,13 @@ func validateInitramfs(cfg *Config) error {
 			return fmt.Errorf("'agent' section is required for default init mode (no [init] section)")
 		}
 		return validateAgentConfig(cfg.Agent)
-		
+
 	case "custom":
 		// Custom init mode - agent not allowed
 		if cfg.Agent != nil {
 			return fmt.Errorf("'agent' section cannot be specified with custom init mode ([init] path set)")
 		}
-		
+
 	case "none":
 		// None mode - agent not allowed
 		if cfg.Agent != nil {

@@ -6,7 +6,7 @@ type Config struct {
 	Version    string            `toml:"version"`
 	Strategy   string            `toml:"strategy"`
 	Agent      *AgentConfig      `toml:"agent,omitempty"`
-	Init       *InitConfig       `toml:"init,omitempty"`       // Init configuration (default, custom, or none)
+	Init       *InitConfig       `toml:"init,omitempty"` // Init configuration (default, custom, or none)
 	Source     SourceConfig      `toml:"source"`
 	Filesystem *FilesystemConfig `toml:"filesystem,omitempty"`
 	Mappings   map[string]string `toml:"mappings,omitempty"`

@@ -426,14 +426,14 @@ func (b *InitramfsBuilder) getInitMode() string {
 // so the C init knows what to exec.
 func (b *InitramfsBuilder) writeCustomInitPath() error {
 	logging.Debug("Writing custom init path", "path", b.Config.Init.Path)
-	
+
 	initFilePath := filepath.Join(b.RootfsDir, ".volant_init")
 	content := b.Config.Init.Path + "\n"
-	
+
 	if err := os.WriteFile(initFilePath, []byte(content), 0644); err != nil {
 		return fmt.Errorf("failed to write .volant_init: %w", err)
 	}
-	
+
 	logging.Debug("Custom init path written")
 	return nil
 }
