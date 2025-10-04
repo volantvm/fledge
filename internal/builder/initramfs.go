@@ -73,18 +73,15 @@ func (b *InitramfsBuilder) Build() error {
 		}
 
 	case "custom":
-		// Mode 2: C init + custom init script/binary
-		if err := b.compileInit(); err != nil {
-			return fmt.Errorf("failed to compile init: %w", err)
-		}
-		if err := b.writeCustomInitPath(); err != nil {
-			return fmt.Errorf("failed to write custom init path: %w", err)
+		// Mode 2: User's custom init binary as PID 1
+		if err := b.installCustomInit(); err != nil {
+			return fmt.Errorf("failed to install custom init: %w", err)
 		}
 		logging.Info("Custom init configured", "path", b.Config.Init.Path)
 
 	case "none":
-		// Mode 3: No init wrapper - user's binary becomes PID 1
-		logging.Info("No init wrapper - user binary will be PID 1")
+		// Mode 3: No init wrapper - user must provide init via mappings
+		logging.Info("No init wrapper - user must provide init via mappings")
 		// Skip compileInit() and installAgent()
 	}
 
@@ -424,16 +421,34 @@ func (b *InitramfsBuilder) getInitMode() string {
 
 // writeCustomInitPath writes the custom init path to /.volant_init
 // so the C init knows what to exec.
-func (b *InitramfsBuilder) writeCustomInitPath() error {
-	logging.Debug("Writing custom init path", "path", b.Config.Init.Path)
-	
-	initFilePath := filepath.Join(b.RootfsDir, ".volant_init")
-	content := b.Config.Init.Path + "\n"
-	
-	if err := os.WriteFile(initFilePath, []byte(content), 0644); err != nil {
-		return fmt.Errorf("failed to write .volant_init: %w", err)
+func (b *InitramfsBuilder) installCustomInit() error {
+	logging.Info("Installing custom init binary", "source", b.Config.Init.Path)
+
+	// Resolve the source path relative to WorkDir
+	srcPath := b.Config.Init.Path
+	if !filepath.IsAbs(srcPath) {
+		srcPath = filepath.Join(b.WorkDir, srcPath)
 	}
-	
-	logging.Debug("Custom init path written")
+
+	// Check if source file exists
+	if _, err := os.Stat(srcPath); os.IsNotExist(err) {
+		return fmt.Errorf("custom init file not found: %s", srcPath)
+	}
+
+	// Copy to /init in rootfs
+	initDest := filepath.Join(b.RootfsDir, "init")
+
+	// Read source file
+	data, err := os.ReadFile(srcPath)
+	if err != nil {
+		return fmt.Errorf("failed to read custom init: %w", err)
+	}
+
+	// Write to destination
+	if err := os.WriteFile(initDest, data, 0755); err != nil {
+		return fmt.Errorf("failed to write custom init: %w", err)
+	}
+
+	logging.Info("Custom init binary installed successfully")
 	return nil
 }
