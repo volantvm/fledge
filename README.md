@@ -1,3 +1,23 @@
+<p align="center">
+  <img src="banner.png" alt="VOLANT — The Intelligent Execution Cloud"/>
+</p>
+
+<p align="center">
+  <a href="https://github.com/volantvm/fledge/actions">
+    <img src="https://img.shields.io/github/actions/workflow/status/volantvm/fledge/ci.yml?branch=main&style=flat-square&label=tests" alt="Build Status">
+  </a>
+  <a href="https://github.com/volantvm/volant/releases">
+    <img src="https://img.shields.io/github/v/release/volantvm/fledge.svg?style=flat-square" alt="Latest Release">
+  </a>
+  <a href="https://golang.org/">
+    <img src="https://img.shields.io/badge/Go-1.22+-black.svg?style=flat-square" alt="Go Version">
+  </a>
+  <a href="https://github.com/volantvm/volant/blob/main/LICENSE">
+    <img src="https://img.shields.io/badge/License-BSL_1.1-black.svg?style=flat-square" alt="License">
+  </a>
+</p>
+
+
 # Fledge
 
 **The Volant Plugin Builder**
@@ -22,7 +42,7 @@ image = "docker.io/library/nginx:alpine"
 
 $ fledge build
 ✓ Downloaded NGINX Alpine image
-✓ Installed kestrel agent  
+✓ Installed kestrel agent
 ✓ Created bootable ext4 image (85 MB)
 ✓ Generated plugin manifest
 
@@ -48,16 +68,108 @@ $ fledge build
 
 ### OCI Rootfs — Docker Compatibility
 
-**What**: Converts Docker/OCI images to bootable disk images  
-**Use for**: Existing Docker images, complex dependencies  
-**Output**: `.img` file (ext4/xfs/btrfs)  
+**What**: Converts Docker/OCI images to bootable disk images
+**Use for**: Existing Docker images, complex dependencies
+**Output**: `.img` file (ext4/xfs/btrfs)
 **Size**: 50 MB - 2 GB
 
 ### Initramfs — High Performance
 
-**What**: Builds custom RAM-only appliances  
-**Use for**: Custom apps, stateless services, edge computing  
-**Output**: `.cpio.gz` file  
+**What**: Builds custom RAM-only appliances
+**Use for**: Custom apps, stateless services, edge computing
+**Output**: `.cpio.gz` file
+**Size**: 5-50 MB
+
+---
+
+## Quick Start
+
+### Install
+
+```bash
+# Install fledge
+curl -fsSL https://fledge.sh/install | bash
+
+# Or download from releases
+curl -LO https://github.com/volantvm/fledge/releases/latest/download/fledge-linux-amd64
+chmod +x fledge-linux-amd64
+sudo mv fledge-linux-amd64 /usr/local/bin/fledge
+```
+
+### Build Your First Plugin
+
+```bash
+mkdir my-plugin && cd my-plugin
+
+cat > fledge.toml <<'EOF'
+[plugin]
+name = "nginx"
+version = "1.0.0"
+strategy = "oci_rootfs"
+
+[oci_source]
+image = "nginx:alpine"
+
+[filesystem]
+type = "ext4"
+EOF
+
+fledge build
+
+# Output: nginx-rootfs.img + nginx.manifest.json
+```
+
+### Deploy to Volant
+
+```bash
+volar plugins install --manifest nginx.manifest.json
+volar vms create web --plugin nginx
+```
+
+Done! Your NGINX VM is running.
+This guide will walk you through everything you need to know to build your first plugin and become proficient in Volant plugin development.
+=======
+[oci_source]
+image = "docker.io/library/nginx:alpine"
+
+$ fledge build
+✓ Downloaded NGINX Alpine image
+✓ Installed kestrel agent
+✓ Created bootable ext4 image (85 MB)
+✓ Generated plugin manifest
+
+# Option 2: Build a custom initramfs appliance
+$ cat fledge.toml
+[plugin]
+name = "caddy"
+strategy = "initramfs"
+
+[[file_mappings]]
+source = "./caddy_linux_amd64"
+dest = "/usr/local/bin/caddy"
+mode = 0o755
+
+$ fledge build
+✓ Created minimal initramfs (12 MB)
+✓ Plugin ready to deploy
+```
+
+---
+
+## Two Build Strategies
+
+### OCI Rootfs — Docker Compatibility
+
+**What**: Converts Docker/OCI images to bootable disk images
+**Use for**: Existing Docker images, complex dependencies
+**Output**: `.img` file (ext4/xfs/btrfs)
+**Size**: 50 MB - 2 GB
+
+### Initramfs — High Performance
+
+**What**: Builds custom RAM-only appliances
+**Use for**: Custom apps, stateless services, edge computing
+**Output**: `.cpio.gz` file
 **Size**: 5-50 MB
 
 ---
@@ -379,7 +491,7 @@ preallocate = false     # true = fallocate (faster), false = sparse (smaller)
 
 **Size buffer:** Fledge calculates the exact space needed and adds this buffer. 50-100 MB is typically sufficient.
 
-**Preallocate:** 
+**Preallocate:**
 - `false` (default): Creates sparse files, saves disk space during build
 - `true`: Preallocates space, slightly faster builds but uses more disk
 
@@ -591,7 +703,7 @@ mkdir -p configs
 # payload/app/server.py
 from flask import Flask, render_template
 
-app = Flask(__name__, 
+app = Flask(__name__,
             template_folder='/var/www/templates',
             static_folder='/var/www/static')
 
@@ -883,7 +995,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      
+
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -891,16 +1003,16 @@ jobs:
           curl -LO https://github.com/opencontainers/umoci/releases/download/v0.4.7/umoci.amd64
           sudo mv umoci.amd64 /usr/local/bin/umoci
           sudo chmod +x /usr/local/bin/umoci
-      
+
       - name: Install Fledge
         run: |
           curl -LO https://github.com/volantvm/fledge/releases/latest/download/fledge-linux-amd64
           sudo mv fledge-linux-amd64 /usr/local/bin/fledge
           sudo chmod +x /usr/local/bin/fledge
-      
+
       - name: Build Plugin
         run: sudo fledge build -v
-      
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v3
         with:
