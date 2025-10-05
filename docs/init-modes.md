@@ -1,12 +1,11 @@
-# Init Modes: Three Tiers of Control
+# Init Modes
 
 Fledge offers three ways to handle init/PID 1 in your initramfs, each solving different problems with zero friction.
 
 ---
 
-## The Ladder of Laziness™
 
-### 🎯 Mode 1: Default (Batteries-Included)
+### Default (Batteries-Included)
 **For the 90% who just want it to work**
 
 **What you get:**
@@ -32,7 +31,7 @@ busybox_sha256 = "6e123e7f3202a8c1e9b1f94d8941580a25135382b99e8d3e34fb858bba3113
 "./myapp" = "/usr/bin/myapp"
 ```
 
-**No `[init]` section = default mode** ✨
+**No `[init]` section = default mode**
 
 **Boot flow:**
 ```
@@ -41,8 +40,7 @@ Kernel → C init → Kestrel → Your app
 
 ---
 
-### 🛠️ Mode 2: Custom Init
-**For the lazy genius who needs ONE custom thing**
+### Custom Init
 
 **Use cases:**
 - Need to create a special socket before app starts
@@ -94,8 +92,7 @@ Kernel → C init → Your custom init → Your app
 
 ---
 
-### ⚡ Mode 3: No Init Wrapper
-**For the ultimate lazy genius with battle-tested supervisor**
+### No Init Wrapper
 
 **Use cases:**
 - App already has supervisor built-in (Rust actix, systemd-style apps)
@@ -135,10 +132,10 @@ fn main() {
     mount("proc", "/proc", "proc", 0, None).unwrap();
     mount("sysfs", "/sys", "sysfs", 0, None).unwrap();
     mount("devtmpfs", "/dev", "devtmpfs", 0, None).unwrap();
-    
+
     // Your app logic here
     run_my_server();
-    
+
     // Handle PID 1 reaping (zombie processes)
     loop {
         let _ = wait();
@@ -268,16 +265,3 @@ busybox_sha256 = "6e123e7f3202a8c1e9b1f94d8941580a25135382b99e8d3e34fb858bba3113
 **Problem:** Custom init not executable
 
 **Solution:** Ensure file mapped to `/init` or custom path has execute permission (755)
-
----
-
-## Best Practices
-
-1. **Start with Default** - Most users never need anything else
-2. **Custom Init for Scripts** - Shell scripts are perfect for simple pre-flight
-3. **No Init for Performance** - Only if you've benchmarked and it matters
-4. **Document Your Choice** - Future you will thank present you
-
----
-
-**Remember: Batteries-included first, modular second. The system serves beginners and experts equally.**

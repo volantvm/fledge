@@ -195,9 +195,9 @@ func validateInitConfig(cfg *Config) error {
 
 	// Validate custom init path
 	if cfg.Init.Path != "" {
-		// Path must be absolute
-		if !filepath.IsAbs(cfg.Init.Path) {
-			return fmt.Errorf("[init] path must be absolute (start with /), got: %s", cfg.Init.Path)
+		// Path can be relative (to config file) or absolute
+		if cfg.Init.Path == "" {
+			return fmt.Errorf("[init] path cannot be empty")
 		}
 	}
 
