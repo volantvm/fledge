@@ -60,6 +60,12 @@ Python Flask web application. Shows how to map multiple directories for applicat
    sudo fledge build
    ```
 
+### Important: Agent requirements
+
+- OCI Rootfs examples require an `[agent]` section. Fledge injects the Kestrel agent into the image.
+- Initramfs default mode (no `[init]`): Kestrel is used; you may omit `[agent]` and Fledge will default to `source_strategy = "release"`, `version = "latest"`.
+- Initramfs with custom or no init (`[init] path=...` or `[init] none=true`): Do not include `[agent]` (Kestrel is not used).
+
 ## Tips for Creating Your Own Configurations
 
 ### For Initramfs Plugins

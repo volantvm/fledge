@@ -41,12 +41,20 @@ chmod +x fledge-linux-amd64 && sudo mv fledge-linux-amd64 /usr/local/bin/fledge
 
 ```bash
 cat > fledge.toml <<'EOF'
-[plugin]
-name = "nginx"
+version = "1"
 strategy = "oci_rootfs"
 
-[oci_source]
+[agent]
+source_strategy = "release"
+version = "latest"
+
+[source]
 image = "nginx:alpine"
+
+[filesystem]
+type = "ext4"
+size_buffer_mb = 100
+preallocate = false
 EOF
 
 sudo fledge build
@@ -102,12 +110,18 @@ volar vms create demo --plugin myapp
 ## fledge.toml Reference (abridged)
 
 | Section | Example | Purpose |
-|----------|----------|---------|
-| `[plugin]` | `name`, `strategy` | Basic metadata |
-| `[agent]` | `source_strategy="release"` | Pulls Kestrel agent |
-| `[source]` | `image="nginx:alpine"` / BusyBox URL | Build input |
-| `[filesystem]` | `type="ext4"` | OCI only |
-| `[mappings]` | `"local"="/dest"` | Add files to image |
+|---------|---------|---------|
+| Top-level | `version = "1"`, `strategy = "oci_rootfs"` | Required metadata |
+| `[agent]` | `source_strategy = "release"`, `version = "latest"` | Kestrel agent source. Required for `oci_rootfs`. Used for `initramfs` default mode (omit `[init]`). Not allowed with `[init] path=...` or `[init] none=true`. |
+| `[source]` | `image = "nginx:alpine"` (OCI) / `busybox_url=...` (initramfs) | Build input |
+| `[filesystem]` | `type = "ext4"`, `size_buffer_mb = 100` | Required for `oci_rootfs` |
+| `[init]` | `path = "/usr/local/bin/my-init"` or `none = true` | Initramfs only; choose custom init or no wrapper |
+| `[mappings]` | `"local" = "/dest"` | Optional file/directory mappings |
+
+Note on agent requirements:
+- OCI Rootfs: `[agent]` is required.
+- Initramfs default (no `[init]`): Kestrel is used; `[agent]` can be specified explicitly or defaulted to `source_strategy = "release"`, `version = "latest"`.
+- Initramfs with `[init] path=...` or `[init] none=true`: Do not include `[agent]` (Kestrel is not used).
 
 ---
 

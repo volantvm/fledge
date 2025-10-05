@@ -33,6 +33,8 @@ busybox_sha256 = "6e123e7f3202a8c1e9b1f94d8941580a25135382b99e8d3e34fb858bba3113
 
 **No `[init]` section = default mode**
 
+Note: Kestrel agent is used in this mode. You may omit `[agent]` (defaults to `release/latest`) or specify it explicitly.
+
 **Boot flow:**
 ```
 Kernel → C init → Kestrel → Your app
@@ -53,6 +55,8 @@ Kernel → C init → Kestrel → Your app
 - Your custom init script/binary runs as PID 1
 - YOU manage the workload
 - **No Kestrel** (you handle lifecycle yourself)
+
+Do not include an `[agent]` section in this mode.
 
 **Configuration:**
 ```toml
@@ -105,6 +109,8 @@ Kernel → C init → Your custom init → Your app
 - Your binary becomes PID 1 directly
 - **YOU must mount filesystems** (`/proc`, `/sys`, `/dev`, etc.)
 - Maximum performance, maximum control
+
+Do not include an `[agent]` section in this mode.
 
 **Configuration:**
 ```toml
