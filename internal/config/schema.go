@@ -59,7 +59,7 @@ type FilesystemConfig struct {
 func DefaultFilesystemConfig() *FilesystemConfig {
 	return &FilesystemConfig{
 		Type:         "ext4",
-		SizeBufferMB: 100,
+		SizeBufferMB: 0,
 		Preallocate:  false,
 	}
 }
