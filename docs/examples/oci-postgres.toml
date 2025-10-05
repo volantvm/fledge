@@ -8,6 +8,10 @@
 version = "1"
 strategy = "oci_rootfs"
 
+[agent]
+source_strategy = "release"
+version = "latest"
+
 [source]
 image = "postgres:15-alpine"
 
