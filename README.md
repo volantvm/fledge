@@ -22,7 +22,7 @@ The recipe for building your artifact is defined in a `fledge.toml` file.
 There are two kinds of configuration files for Volant plugins: `manifest.json` and `fledge.toml`
 
 This guide is focused on the 'fledge.toml' configuration file, as this repository is focused on the stage of building the artifact.
-If you are looking for the 'manifest.json' configuration file, meaning if you do not intend to build the artifact yourself and only want to install a pre-made plugin, please refer to the [example-plugin-caddy](https://github.com/volantvm/example-plugin  ) repository.
+If you are looking for the 'manifest.json' configuration file, meaning if you do not intend to build the artifact yourself and only want to install a pre-made plugin, please refer to [initramfs-plugin-example](https://github.com/volantvm/initramfs-plugin-example)(caddy) or [oci-plugin-example](https://github.com/volantvm/oci-plugin-example)(nginx)
 
 
 Let's get started on building the artifact.
