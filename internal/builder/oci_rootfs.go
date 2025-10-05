@@ -292,8 +292,9 @@ func (b *OCIRootfsBuilder) createImageFile() error {
 		return fmt.Errorf("failed to parse size %q: %w", parts[0], err)
 	}
 
-	// Add buffer
-	bufferKB := b.Config.Filesystem.SizeBufferMB * 1024
+	// Determine buffer (tiered if SizeBufferMB == 0)
+	bufferMB := b.computeBufferMB(sizeKB)
+	bufferKB := bufferMB * 1024
 	totalSizeKB := sizeKB + bufferKB
 	totalSizeBytes := totalSizeKB * 1024
 
@@ -322,6 +323,26 @@ func (b *OCIRootfsBuilder) createImageFile() error {
 
 	logging.Debug("Image file created", "path", b.ImagePath)
 	return nil
+}
+
+// computeBufferMB returns the buffer size in MB based on config and rootfs size.
+// If SizeBufferMB > 0, that explicit value is used. Otherwise a tiered policy applies:
+// <=128MB -> 32MB; <=512MB -> 64MB; <=2GB -> 128MB; >2GB -> 256MB
+func (b *OCIRootfsBuilder) computeBufferMB(rootfsKB int) int {
+	if b.Config != nil && b.Config.Filesystem != nil && b.Config.Filesystem.SizeBufferMB > 0 {
+		return b.Config.Filesystem.SizeBufferMB
+	}
+	sizeMB := rootfsKB / 1024
+	switch {
+	case sizeMB <= 128:
+		return 32
+	case sizeMB <= 512:
+		return 64
+	case sizeMB <= 2048:
+		return 128
+	default:
+		return 256
+	}
 }
 
 // createFilesystem creates the filesystem on the image file.
@@ -554,8 +575,28 @@ func (b *OCIRootfsBuilder) shrinkFilesystem() error {
 		return fmt.Errorf("failed to parse minimum block count from resize2fs -P output: %q", string(output))
 	}
 
-	// Compute buffer in blocks from configured SizeBufferMB
-	bufBlocks := int64(b.Config.Filesystem.SizeBufferMB) * 1024 * 1024 / blockSize
+	// Recalculate rootfs size to apply the same tiered buffer policy used at allocation time
+	rootfsPath := filepath.Join(b.UnpackedPath, "rootfs")
+	cmd = exec.Command("du", "-sk", rootfsPath)
+	duOut, duErr := cmd.Output()
+	var rootfsKB int
+	if duErr == nil {
+		parts := strings.Fields(string(duOut))
+		if len(parts) >= 1 {
+			if v, err := strconv.Atoi(parts[0]); err == nil {
+				rootfsKB = v
+			}
+		}
+	}
+	// Fallback if du failed
+	if rootfsKB == 0 {
+		// Use minimal blocks as approximation
+		rootfsKB = int(minBlocks * (blockSize / 1024))
+	}
+
+	// Compute buffer in blocks from tiered or explicit buffer MB
+	bufferMB := b.computeBufferMB(rootfsKB)
+	bufBlocks := int64(bufferMB) * 1024 * 1024 / blockSize
 	// Ensure at least 1 block buffer to avoid zero-free-space images
 	if bufBlocks < 1 {
 		bufBlocks = 1
