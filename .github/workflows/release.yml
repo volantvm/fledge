@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 permissions:
   contents: write
@@ -12,44 +12,44 @@ jobs:
   release:
     name: Create Release
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
-      
+          go-version: "1.24"
+
       - name: Run tests
         run: go test -v ./...
-      
+
       - name: Build binaries
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
           BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           GIT_COMMIT=$(git rev-parse --short HEAD)
-          
+
           LDFLAGS="-s -w -X main.version=${VERSION} -X main.buildDate=${BUILD_DATE} -X main.gitCommit=${GIT_COMMIT}"
-          
+
           # Linux AMD64
           GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o fledge-linux-amd64 ./cmd/fledge
-          
+
           # Linux ARM64
           GOOS=linux GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o fledge-linux-arm64 ./cmd/fledge
-          
+
           # macOS AMD64
           GOOS=darwin GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o fledge-darwin-amd64 ./cmd/fledge
-          
+
           # macOS ARM64 (Apple Silicon)
           GOOS=darwin GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o fledge-darwin-arm64 ./cmd/fledge
-          
+
           # Create checksums
           sha256sum fledge-* > checksums.txt
-      
+
       - name: Generate changelog
         id: changelog
         run: |
@@ -58,15 +58,15 @@ jobs:
           if [ -z "$PREVIOUS_TAG" ]; then
             PREVIOUS_TAG=$(git rev-list --max-parents=0 HEAD)
           fi
-          
+
           # Generate changelog
           echo "## What's Changed" > CHANGELOG.md
           git log ${PREVIOUS_TAG}..HEAD --pretty=format:"* %s (%h)" --no-merges >> CHANGELOG.md
-          
+
           # Show contributors
           echo -e "\n\n## Contributors" >> CHANGELOG.md
           git log ${PREVIOUS_TAG}..HEAD --format='* @%an' | sort -u >> CHANGELOG.md
-      
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
@@ -80,4 +80,4 @@ jobs:
           draft: false
           prerelease: false
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
