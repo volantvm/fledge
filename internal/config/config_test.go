@@ -138,8 +138,8 @@ image = "nginx:alpine"
 	if cfg.Filesystem.Type != "ext4" {
 		t.Errorf("expected default filesystem type 'ext4', got '%s'", cfg.Filesystem.Type)
 	}
-	if cfg.Filesystem.SizeBufferMB != 100 {
-		t.Errorf("expected default size_buffer_mb 100, got %d", cfg.Filesystem.SizeBufferMB)
+	if cfg.Filesystem.SizeBufferMB != 0 {
+		t.Errorf("expected default size_buffer_mb 0 (auto), got %d", cfg.Filesystem.SizeBufferMB)
 	}
 }
 

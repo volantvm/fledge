@@ -292,8 +292,9 @@ func (b *OCIRootfsBuilder) createImageFile() error {
 		return fmt.Errorf("failed to parse size %q: %w", parts[0], err)
 	}
 
-	// Add buffer
-	bufferKB := b.Config.Filesystem.SizeBufferMB * 1024
+	// Determine buffer (tiered if SizeBufferMB == 0)
+	bufferMB := b.computeBufferMB(sizeKB)
+	bufferKB := bufferMB * 1024
 	totalSizeKB := sizeKB + bufferKB
 	totalSizeBytes := totalSizeKB * 1024
 
@@ -322,6 +323,26 @@ func (b *OCIRootfsBuilder) createImageFile() error {
 
 	logging.Debug("Image file created", "path", b.ImagePath)
 	return nil
+}
+
+// computeBufferMB returns the buffer size in MB based on config and rootfs size.
+// If SizeBufferMB > 0, that explicit value is used. Otherwise a tiered policy applies:
+// <=128MB -> 32MB; <=512MB -> 64MB; <=2GB -> 128MB; >2GB -> 256MB
+func (b *OCIRootfsBuilder) computeBufferMB(rootfsKB int) int {
+	if b.Config != nil && b.Config.Filesystem != nil && b.Config.Filesystem.SizeBufferMB > 0 {
+		return b.Config.Filesystem.SizeBufferMB
+	}
+	sizeMB := rootfsKB / 1024
+	switch {
+	case sizeMB <= 128:
+		return 32
+	case sizeMB <= 512:
+		return 64
+	case sizeMB <= 2048:
+		return 128
+	default:
+		return 256
+	}
 }
 
 // createFilesystem creates the filesystem on the image file.
@@ -499,53 +520,111 @@ func (b *OCIRootfsBuilder) shrinkFilesystem() error {
 		return nil
 	}
 
-	logging.Info("Shrinking filesystem to optimal size")
+	logging.Info("Shrinking filesystem while preserving free space buffer")
 
-	// Run e2fsck
+	// Run e2fsck before any resize operations
 	cmd := exec.Command("e2fsck", "-f", "-y", b.ImagePath)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
+	if output, err := cmd.CombinedOutput(); err != nil {
+		// e2fsck may return non-zero even if it fixed issues; log and continue
 		logging.Debug("e2fsck completed with non-zero exit", "output", string(output))
 	}
 
-	// Shrink filesystem
-	cmd = exec.Command("resize2fs", "-M", b.ImagePath)
-	output, err = cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("resize2fs failed: %w\nOutput: %s", err, string(output))
-	}
-
-	// Get new filesystem size
+	// Get current block count and block size
 	cmd = exec.Command("dumpe2fs", "-h", b.ImagePath)
-	output, err = cmd.Output()
+	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("dumpe2fs failed: %w", err)
 	}
 
-	// Parse block count and block size
-	var blockCount, blockSize int64
+	var curBlocks, blockSize int64
 	scanner := bufio.NewScanner(strings.NewReader(string(output)))
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "Block count:") {
-			fmt.Sscanf(line, "Block count: %d", &blockCount)
+			fmt.Sscanf(line, "Block count: %d", &curBlocks)
 		} else if strings.HasPrefix(line, "Block size:") {
 			fmt.Sscanf(line, "Block size: %d", &blockSize)
 		}
 	}
-
-	if blockCount == 0 || blockSize == 0 {
-		return fmt.Errorf("failed to parse filesystem size from dumpe2fs")
+	if curBlocks == 0 || blockSize == 0 {
+		return fmt.Errorf("failed to parse current filesystem size from dumpe2fs")
 	}
 
-	// Calculate and truncate to actual size
-	fsSize := blockCount * blockSize
+	// Query minimal required size in blocks
+	cmd = exec.Command("resize2fs", "-P", b.ImagePath)
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("resize2fs -P failed: %w\nOutput: %s", err, string(output))
+	}
+
+	var minBlocks int64
+	// Expected line: "Estimated minimum size of the filesystem: N"
+	sc := bufio.NewScanner(strings.NewReader(string(output)))
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if strings.HasPrefix(line, "Estimated minimum size of the filesystem:") {
+			// Parse last field as the block count
+			fields := strings.Fields(line)
+			if len(fields) > 0 {
+				// last token should be N
+				fmt.Sscanf(fields[len(fields)-1], "%d", &minBlocks)
+			}
+		}
+	}
+	if minBlocks == 0 {
+		return fmt.Errorf("failed to parse minimum block count from resize2fs -P output: %q", string(output))
+	}
+
+	// Recalculate rootfs size to apply the same tiered buffer policy used at allocation time
+	rootfsPath := filepath.Join(b.UnpackedPath, "rootfs")
+	cmd = exec.Command("du", "-sk", rootfsPath)
+	duOut, duErr := cmd.Output()
+	var rootfsKB int
+	if duErr == nil {
+		parts := strings.Fields(string(duOut))
+		if len(parts) >= 1 {
+			if v, err := strconv.Atoi(parts[0]); err == nil {
+				rootfsKB = v
+			}
+		}
+	}
+	// Fallback if du failed
+	if rootfsKB == 0 {
+		// Use minimal blocks as approximation
+		rootfsKB = int(minBlocks * (blockSize / 1024))
+	}
+
+	// Compute buffer in blocks from tiered or explicit buffer MB
+	bufferMB := b.computeBufferMB(rootfsKB)
+	bufBlocks := int64(bufferMB) * 1024 * 1024 / blockSize
+	// Ensure at least 1 block buffer to avoid zero-free-space images
+	if bufBlocks < 1 {
+		bufBlocks = 1
+	}
+
+	// Desired final size: minimal + buffer, but never larger than current size
+	desiredBlocks := minBlocks + bufBlocks
+	if desiredBlocks > curBlocks {
+		desiredBlocks = curBlocks
+	}
+
+	// Only resize if it actually changes the size
+	if desiredBlocks < curBlocks {
+		// Shrink to desired size in filesystem blocks
+		cmd = exec.Command("resize2fs", b.ImagePath, strconv.FormatInt(desiredBlocks, 10))
+		if output, err = cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("resize2fs to target size failed: %w\nOutput: %s", err, string(output))
+		}
+	}
+
+	// Truncate backing file to match filesystem size
+	fsSize := desiredBlocks * blockSize
 	if err := os.Truncate(b.ImagePath, fsSize); err != nil {
 		return fmt.Errorf("failed to truncate image: %w", err)
 	}
 
 	sizeMB := float64(fsSize) / (1024 * 1024)
-	logging.Info("Filesystem shrunk", "size_mb", fmt.Sprintf("%.2f", sizeMB))
+	logging.Info("Filesystem resized", "final_size_mb", fmt.Sprintf("%.2f", sizeMB), "free_buffer_mb", b.Config.Filesystem.SizeBufferMB)
 
 	return nil
 }
