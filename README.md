@@ -61,6 +61,32 @@ sudo fledge build
 # → outputs nginx-rootfs.img + nginx.manifest.json
 ```
 
+### Build from a Dockerfile (OCI rootfs)
+
+```bash
+cat > fledge.toml <<'EOF'
+version = "1"
+strategy = "oci_rootfs"
+
+[agent]
+source_strategy = "release"
+version = "latest"
+
+[source]
+dockerfile = "./Dockerfile"
+context = "."            # optional; defaults to Dockerfile's directory
+target = ""              # optional multi-stage target
+build_args = { FOO = "bar" }
+
+[filesystem]
+type = "ext4"
+size_buffer_mb = 100
+preallocate = false
+EOF
+
+sudo fledge build
+```
+
 ### Install and run it
 
 ```bash
@@ -92,8 +118,9 @@ source_strategy = "release"
 version = "latest"
 
 [source]
-busybox_url = "https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"
-busybox_sha256 = "6e123e7f3202a8c1e9b1f94d8941580a25135382b99e8d3e34fb858bba311348"
+# Busybox is optional; defaults to a pinned musl static busybox if omitted
+# busybox_url = "https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"
+# busybox_sha256 = "6e123e7f3202a8c1e9b1f94d8941580a25135382b99e8d3e34fb858bba311348"
 
 [mappings]
 "./myapp" = "/usr/bin/myapp"
@@ -105,6 +132,25 @@ volar plugins install --manifest myapp.manifest.json
 volar vms create demo --plugin myapp
 ```
 
+### Initramfs from a Dockerfile (overlay → busybox → kestrel/init)
+
+```toml
+version = "1"
+strategy = "initramfs"
+
+[agent]
+source_strategy = "release"
+version = "latest"
+
+[source]
+dockerfile = "./Dockerfile"
+context = "."
+# optional: busybox_url / busybox_sha256 (defaults applied if omitted)
+
+[mappings]
+"./myapp" = "/usr/bin/myapp"
+```
+
 ---
 
 ## fledge.toml Reference (abridged)
@@ -113,7 +159,7 @@ volar vms create demo --plugin myapp
 |---------|---------|---------|
 | Top-level | `version = "1"`, `strategy = "oci_rootfs"` | Required metadata |
 | `[agent]` | `source_strategy = "release"`, `version = "latest"` | Kestrel agent source. Required for `oci_rootfs`. Used for `initramfs` default mode (omit `[init]`). Not allowed with `[init] path=...` or `[init] none=true`. |
-| `[source]` | `image = "nginx:alpine"` (OCI) / `busybox_url=...` (initramfs) | Build input |
+| `[source]` | `image = "nginx:alpine"` or `dockerfile = "./Dockerfile"` (+ `context`, `target`, `build_args`) for image input; `busybox_url`/`busybox_sha256` optional for initramfs (defaults applied) | Build input |
 | `[filesystem]` | `type = "ext4"`, `size_buffer_mb = 100` | Required for `oci_rootfs` |
 | `[init]` | `path = "/usr/local/bin/my-init"` or `none = true` | Initramfs only; choose custom init or no wrapper |
 | `[mappings]` | `"local" = "/dest"` | Optional file/directory mappings |
