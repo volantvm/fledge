@@ -87,6 +87,11 @@ EOF
 sudo fledge build
 ```
 
+Notes:
+- `source.image` or `source.dockerfile` may be provided (mutually exclusive)
+- `build_args` are passed through to `docker build`
+- Ephemeral images/tags created during the build are cleaned up automatically
+
 ### Install and run it
 
 ```bash
@@ -150,6 +155,10 @@ context = "."
 [mappings]
 "./myapp" = "/usr/bin/myapp"
 ```
+
+Notes:
+- If `busybox_url` is omitted, a pinned musl-static BusyBox is injected by default
+- The built image filesystem is overlaid into the initramfs before adding Kestrel/init (Mode 1)
 
 ---
 
