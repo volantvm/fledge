@@ -3,6 +3,7 @@ package builder
 import (
 	_ "embed"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,10 +25,11 @@ const (
 
 // InitramfsBuilder builds initramfs archives following the Volant specification.
 type InitramfsBuilder struct {
-	Config     *config.Config
-	WorkDir    string
-	RootfsDir  string
-	OutputPath string
+	Config       *config.Config
+	WorkDir      string
+	RootfsDir    string
+	OutputPath   string
+	EphemeralTag string
 }
 
 // NewInitramfsBuilder creates a new initramfs builder.
@@ -58,7 +60,16 @@ func (b *InitramfsBuilder) Build() error {
 		return fmt.Errorf("failed to setup directory structure: %w", err)
 	}
 
-	// Determine init mode and handle accordingly
+	// 1) Overlay Docker rootfs if provided (Dockerfile/image)
+	if err := b.overlayDockerRootfsIfProvided(); err != nil {
+		return fmt.Errorf("failed to overlay docker rootfs: %w", err)
+	}
+
+	if err := b.installBusybox(); err != nil {
+		return fmt.Errorf("failed to install busybox: %w", err)
+	}
+
+	// Determine init mode and handle accordingly (after busybox is present)
 	initMode := b.getInitMode()
 	logging.Info("Init mode detected", "mode", initMode)
 
@@ -83,10 +94,6 @@ func (b *InitramfsBuilder) Build() error {
 		// Mode 3: No init wrapper - user must provide init via mappings
 		logging.Info("No init wrapper - user must provide init via mappings")
 		// Skip compileInit() and installAgent()
-	}
-
-	if err := b.installBusybox(); err != nil {
-		return fmt.Errorf("failed to install busybox: %w", err)
 	}
 
 	if err := b.applyMappings(); err != nil {
@@ -250,6 +257,167 @@ func (b *InitramfsBuilder) installAgent() error {
 
 	logging.Info("Kestrel agent installed")
 	return nil
+}
+
+// overlayDockerRootfsIfProvided builds (if needed) and overlays a Docker image rootfs onto the initramfs root.
+func (b *InitramfsBuilder) overlayDockerRootfsIfProvided() error {
+	// If Dockerfile provided, build to an ephemeral tag and treat as image source
+	imgRef := b.Config.Source.Image
+	if b.Config.Source.Dockerfile != "" {
+		tag, err := b.buildDockerImage()
+		if err != nil {
+			return err
+		}
+		b.EphemeralTag = tag
+		imgRef = tag
+	}
+
+	if imgRef == "" {
+		// Nothing to overlay
+		return nil
+	}
+
+	// Create temp oci layout and unpack
+	tmpDir, err := os.MkdirTemp("", "fledge-init-overlay-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	ociLayout := filepath.Join(tmpDir, "oci-layout")
+	unpackDir := filepath.Join(tmpDir, "unpacked")
+	if err := os.MkdirAll(ociLayout, 0755); err != nil {
+		return fmt.Errorf("failed to create oci layout dir: %w", err)
+	}
+
+	// Try local docker-daemon first
+	cmd := exec.Command("skopeo", "copy",
+		fmt.Sprintf("docker-daemon:%s", imgRef),
+		fmt.Sprintf("oci:%s:latest", ociLayout))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		// Try remote registry fallback
+		cmd = exec.Command("skopeo", "copy",
+			fmt.Sprintf("docker://%s", imgRef),
+			fmt.Sprintf("oci:%s:latest", ociLayout))
+		if output2, err2 := cmd.CombinedOutput(); err2 != nil {
+			return fmt.Errorf("skopeo copy failed: %w\nLocal output: %s\nRemote output: %s", err2, string(output), string(output2))
+		}
+	}
+
+	// Unpack
+	if err := os.MkdirAll(unpackDir, 0755); err != nil {
+		return fmt.Errorf("failed to create unpack dir: %w", err)
+	}
+	cmd = exec.Command("umoci", "unpack", "--image", fmt.Sprintf("%s:latest", ociLayout), unpackDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("umoci unpack failed: %w\nOutput: %s", err, string(output))
+	}
+
+	// Overlay the unpacked rootfs onto b.RootfsDir
+	srcRoot := filepath.Join(unpackDir, "rootfs")
+	if err := overlayCopyPreserve(srcRoot, b.RootfsDir); err != nil {
+		return fmt.Errorf("failed to overlay rootfs: %w", err)
+	}
+
+	// Cleanup ephemeral image
+	if b.EphemeralTag != "" {
+		cmd := exec.Command("docker", "rmi", "-f", b.EphemeralTag)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			logging.Warn("Failed to remove ephemeral docker image", "tag", b.EphemeralTag, "error", err, "output", string(output))
+		} else {
+			logging.Debug("Removed ephemeral docker image", "tag", b.EphemeralTag)
+		}
+	}
+
+	return nil
+}
+
+// buildDockerImage builds the configured Dockerfile and returns the ephemeral tag.
+func (b *InitramfsBuilder) buildDockerImage() (string, error) {
+	df := b.Config.Source.Dockerfile
+	dfPath := df
+	if !filepath.IsAbs(dfPath) {
+		dfPath = filepath.Join(b.WorkDir, dfPath)
+	}
+
+	ctxDir := b.Config.Source.Context
+	if ctxDir == "" {
+		ctxDir = filepath.Dir(dfPath)
+	}
+	if !filepath.IsAbs(ctxDir) {
+		ctxDir = filepath.Join(b.WorkDir, ctxDir)
+	}
+
+	tag := fmt.Sprintf("fledge-tmp-%d", time.Now().UnixNano())
+	args := []string{"build", "-t", tag, "-f", dfPath}
+	if tgt := b.Config.Source.Target; tgt != "" {
+		args = append(args, "--target", tgt)
+	}
+	for k, v := range b.Config.Source.BuildArgs {
+		args = append(args, "--build-arg", fmt.Sprintf("%s=%s", k, v))
+	}
+	args = append(args, ctxDir)
+
+	logging.Info("Building Dockerfile for initramfs overlay", "dockerfile", dfPath, "context", ctxDir, "tag", tag)
+	cmd := exec.Command("docker", args...)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("docker build failed: %w\nOutput: %s", err, string(output))
+	}
+	return tag, nil
+}
+
+// overlayCopyPreserve copies srcRoot onto dstRoot preserving file modes and symlinks.
+func overlayCopyPreserve(srcRoot, dstRoot string) error {
+	return filepath.WalkDir(srcRoot, func(srcPath string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(srcRoot, srcPath)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		dstPath := filepath.Join(dstRoot, rel)
+
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+
+		if info.IsDir() {
+			return os.MkdirAll(dstPath, 0755)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(srcPath)
+			if err != nil {
+				return err
+			}
+			// Remove existing path if any to avoid dangling copies
+			_ = os.RemoveAll(dstPath)
+			return os.Symlink(target, dstPath)
+		}
+
+		// Regular file
+		if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
+			return err
+		}
+		srcFile, err := os.Open(srcPath)
+		if err != nil {
+			return err
+		}
+		defer srcFile.Close()
+		dstFile, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode())
+		if err != nil {
+			return err
+		}
+		defer dstFile.Close()
+		if _, err := io.Copy(dstFile, srcFile); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 // applyMappings applies user-defined file mappings.

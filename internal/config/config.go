@@ -45,6 +45,16 @@ func applyDefaults(cfg *Config) error {
 		}
 	}
 
+	// Initramfs: provide default Busybox if not specified
+	if cfg.Strategy == StrategyInitramfs {
+		if cfg.Source.BusyboxURL == "" {
+			cfg.Source.BusyboxURL = DefaultBusyboxURL
+		}
+		if cfg.Source.BusyboxSHA256 == "" {
+			cfg.Source.BusyboxSHA256 = DefaultBusyboxSHA256
+		}
+	}
+
 	// Apply default filesystem config for oci_rootfs if not provided
 	if cfg.Strategy == StrategyOCIRootfs && cfg.Filesystem == nil {
 		cfg.Filesystem = DefaultFilesystemConfig()
@@ -103,8 +113,12 @@ func Validate(cfg *Config) error {
 
 // validateOCIRootfs validates configuration for oci_rootfs strategy.
 func validateOCIRootfs(cfg *Config) error {
-	if cfg.Source.Image == "" {
-		return fmt.Errorf("'source.image' is required for oci_rootfs strategy")
+	// Allow either an existing image reference OR a Dockerfile build input
+	if cfg.Source.Image == "" && cfg.Source.Dockerfile == "" {
+		return fmt.Errorf("either 'source.image' or 'source.dockerfile' is required for oci_rootfs strategy")
+	}
+	if cfg.Source.Image != "" && cfg.Source.Dockerfile != "" {
+		return fmt.Errorf("only one of 'source.image' or 'source.dockerfile' may be specified for oci_rootfs strategy")
 	}
 
 	if cfg.Filesystem == nil {
@@ -132,9 +146,7 @@ func validateOCIRootfs(cfg *Config) error {
 
 // validateInitramfs validates configuration for initramfs strategy.
 func validateInitramfs(cfg *Config) error {
-	if cfg.Source.BusyboxURL == "" {
-		return fmt.Errorf("'source.busybox_url' is required for initramfs strategy")
-	}
+	// Busybox URL is optional; defaults are applied in applyDefaults
 
 	// Validate init configuration
 	if err := validateInitConfig(cfg); err != nil {

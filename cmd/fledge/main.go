@@ -285,8 +285,8 @@ func buildOCIRootfs(ctx context.Context, cfg *config.Config, workDir, outputPath
 	logging.Info("Building OCI rootfs artifact")
 
 	// Validate OCI-specific requirements
-	if cfg.Source.Image == "" {
-		return fmt.Errorf("source.image is required for oci_rootfs strategy")
+	if cfg.Source.Image == "" && cfg.Source.Dockerfile == "" {
+		return fmt.Errorf("either source.image or source.dockerfile is required for oci_rootfs strategy")
 	}
 
 	// Create builder

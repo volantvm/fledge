@@ -43,6 +43,14 @@ type SourceConfig struct {
 	// For "oci_rootfs" strategy
 	Image string `toml:"image,omitempty"`
 
+	// Optional Dockerfile build inputs (for both strategies)
+	// If Dockerfile is provided, Fledge will build the image locally using the
+	// Docker daemon, then export/overlay it depending on the strategy.
+	Dockerfile string            `toml:"dockerfile,omitempty"`
+	Context    string            `toml:"context,omitempty"`
+	Target     string            `toml:"target,omitempty"`
+	BuildArgs  map[string]string `toml:"build_args,omitempty"`
+
 	// For "initramfs" strategy
 	BusyboxURL    string `toml:"busybox_url,omitempty"`
 	BusyboxSHA256 string `toml:"busybox_sha256,omitempty"`
@@ -80,4 +88,11 @@ const (
 	AgentSourceRelease = "release"
 	AgentSourceLocal   = "local"
 	AgentSourceHTTP    = "http"
+)
+
+// Default Busybox (musl static) used when not provided by user.
+// Users can override via [source] busybox_url and busybox_sha256.
+const (
+	DefaultBusyboxURL    = "https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"
+	DefaultBusyboxSHA256 = "6e123e7f3202a8c1e9b1f94d8941580a25135382b99e8d3e34fb858bba311348"
 )

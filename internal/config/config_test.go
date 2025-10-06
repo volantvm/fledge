@@ -201,10 +201,10 @@ type = "ext4"
 
 	_, err := Load(tmpFile)
 	if err == nil {
-		t.Fatal("expected error for missing image, got nil")
+		t.Fatal("expected error when neither image nor dockerfile provided, got nil")
 	}
-	if !strings.Contains(err.Error(), "source.image") {
-		t.Errorf("error should mention 'source.image', got: %v", err)
+	if !strings.Contains(err.Error(), "dockerfile") && !strings.Contains(err.Error(), "source.image") {
+		t.Errorf("error should mention 'source.image' or 'dockerfile', got: %v", err)
 	}
 }
 
@@ -234,7 +234,7 @@ type = "ntfs"
 }
 
 // TestValidationInitramfsMissingBusybox tests initramfs validation.
-func TestValidationInitramfsMissingBusybox(t *testing.T) {
+func TestInitramfsDefaultsBusyboxApplied(t *testing.T) {
 	content := `
 version = "1"
 strategy = "initramfs"
@@ -247,12 +247,12 @@ version = "latest"
 	tmpFile := writeTempConfig(t, content)
 	defer os.Remove(tmpFile)
 
-	_, err := Load(tmpFile)
-	if err == nil {
-		t.Fatal("expected error for missing busybox_url, got nil")
+	cfg, err := Load(tmpFile)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "busybox_url") {
-		t.Errorf("error should mention 'busybox_url', got: %v", err)
+	if cfg.Source.BusyboxURL == "" {
+		t.Fatalf("expected default busybox_url to be applied")
 	}
 }
 
