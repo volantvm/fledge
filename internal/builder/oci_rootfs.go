@@ -43,6 +43,7 @@ type OCIRootfsBuilder struct {
 	ImagePath      string
 	MountPoint     string
 	LoopDevicePath string
+	EphemeralTag   string
 }
 
 // NewOCIRootfsBuilder creates a new OCI rootfs builder.
@@ -86,6 +87,7 @@ func (b *OCIRootfsBuilder) Build() error {
 		name string
 		fn   func() error
 	}{
+		{"Build Dockerfile (if provided)", b.buildDockerfileIfNeeded},
 		{"Download OCI image", b.downloadOCIImage},
 		{"Unpack image layers", b.unpackOCIImage},
 		{"Extract OCI config", b.extractOCIConfig},
@@ -652,6 +654,16 @@ func (b *OCIRootfsBuilder) cleanup() {
 	if b.MountPoint != "" || b.LoopDevicePath != "" {
 		b.unmountImage()
 	}
+
+	// Remove ephemeral docker image tag if created
+	if b.EphemeralTag != "" {
+		cmd := exec.Command("docker", "rmi", "-f", b.EphemeralTag)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			logging.Warn("Failed to remove ephemeral docker image", "tag", b.EphemeralTag, "error", err, "output", string(output))
+		} else {
+			logging.Debug("Removed ephemeral docker image", "tag", b.EphemeralTag)
+		}
+	}
 }
 
 // copyFile is a helper to copy a single file.
@@ -670,4 +682,53 @@ func copyFile(src, dst string) error {
 
 	_, err = io.Copy(dstFile, srcFile)
 	return err
+}
+
+// buildDockerfileIfNeeded builds a Dockerfile into a local image if configured.
+func (b *OCIRootfsBuilder) buildDockerfileIfNeeded() error {
+	df := b.Config.Source.Dockerfile
+	if df == "" {
+		return nil
+	}
+
+	// Resolve Dockerfile and context paths relative to workdir if needed
+	dfPath := df
+	if !filepath.IsAbs(dfPath) {
+		dfPath = filepath.Join(b.WorkDir, dfPath)
+	}
+
+	ctxDir := b.Config.Source.Context
+	if ctxDir == "" {
+		ctxDir = filepath.Dir(dfPath)
+	}
+	if !filepath.IsAbs(ctxDir) {
+		ctxDir = filepath.Join(b.WorkDir, ctxDir)
+	}
+
+	// Generate ephemeral tag
+	tag := fmt.Sprintf("fledge-tmp-%d", time.Now().UnixNano())
+
+	// Build command
+	args := []string{"build", "-t", tag, "-f", dfPath}
+	if tgt := b.Config.Source.Target; tgt != "" {
+		args = append(args, "--target", tgt)
+	}
+	// Build args
+	for k, v := range b.Config.Source.BuildArgs {
+		args = append(args, "--build-arg", fmt.Sprintf("%s=%s", k, v))
+	}
+	args = append(args, ctxDir)
+
+	logging.Info("Building Dockerfile", "dockerfile", dfPath, "context", ctxDir, "tag", tag)
+	cmd := exec.Command("docker", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker build failed: %w\nOutput: %s", err, string(output))
+	}
+
+	b.EphemeralTag = tag
+	// Use the built image as source
+	b.Config.Source.Image = tag
+	logging.Info("Docker build complete", "tag", tag)
+	return nil
 }
