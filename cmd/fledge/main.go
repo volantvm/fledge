@@ -15,8 +15,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/volantvm/fledge/internal/builder"
 	"github.com/volantvm/fledge/internal/config"
-	"github.com/volantvm/fledge/internal/server"
 	"github.com/volantvm/fledge/internal/logging"
+	"github.com/volantvm/fledge/internal/server"
 )
 
 var (
@@ -82,138 +82,326 @@ func newVersionCommand() *cobra.Command {
 
 func newBuildCommand() *cobra.Command {
 	var (
-		configPath string
-		outputPath string
+		configPath      string
+		outputPath      string
+		dockerfilePath  string
+		contextDir      string
+		targetStage     string
+		buildArgValues  []string
+		outputInitramfs bool
 	)
 
 	buildCmd := &cobra.Command{
-		Use:   "build",
-		Short: "Build a plugin artifact from fledge.toml",
-		Long: `Build a plugin artifact based on the declarative fledge.toml configuration.
-
-The tool will automatically detect the build strategy (oci_rootfs or initramfs)
-from the configuration file and produce the appropriate artifact.
+		Use:   "build [DOCKERFILE]",
+		Short: "Build a plugin artifact from fledge.toml or a Dockerfile",
+		Long: `Build Volant plugin artifacts from either a declarative fledge.toml configuration
+or directly from a Dockerfile using the embedded BuildKit solver.
 
 Examples:
-  # Build using default fledge.toml in current directory
-  fledge build
+  # Build using the default fledge.toml in the current directory
+  sudo fledge build
 
-  # Build with custom config and output path
-  fledge build -c path/to/fledge.toml -o my-plugin.img
+  # Build from a specific config file and custom output path
+  sudo fledge build -c path/to/fledge.toml -o dist/rootfs.img
 
-  # Verbose build with detailed logging
-  fledge build -v
+  # Build directly from a Dockerfile (rootfs image output)
+  sudo fledge build ./Dockerfile
 
-  # Quiet build (only show errors and final output path)
-  fledge build -q`,
+  # Build an initramfs from a Dockerfile with custom context and build args
+  sudo fledge build --dockerfile docker/app.Dockerfile --context ./app --build-arg VERSION=1.2.3 --output-initramfs`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runBuild(configPath, outputPath)
+			if len(args) == 1 {
+				if dockerfilePath != "" && dockerfilePath != args[0] {
+					return fmt.Errorf("dockerfile specified multiple times with differing values")
+				}
+				dockerfilePath = args[0]
+			}
+
+			return runBuild(buildCLIOptions{
+				ConfigPath:      configPath,
+				OutputPath:      outputPath,
+				DockerfilePath:  dockerfilePath,
+				ContextDir:      contextDir,
+				Target:          targetStage,
+				BuildArgs:       buildArgValues,
+				OutputInitramfs: outputInitramfs,
+				ConfigExplicit:  cmd.Flags().Changed("config"),
+			})
 		},
 	}
 
 	buildCmd.Flags().StringVarP(&configPath, "config", "c", "fledge.toml", "path to fledge.toml configuration file")
-	buildCmd.Flags().StringVarP(&outputPath, "output", "o", "", "output file path (default: auto-generated from config)")
+	buildCmd.Flags().StringVarP(&outputPath, "output", "o", "", "output file path (default: auto-generated)")
+	buildCmd.Flags().StringVar(&dockerfilePath, "dockerfile", "", "path to Dockerfile for direct-build mode (alternative to positional argument)")
+	buildCmd.Flags().StringVar(&contextDir, "context", "", "build context directory (default: directory containing the Dockerfile)")
+	buildCmd.Flags().StringVar(&targetStage, "target", "", "build target stage (for multi-stage Dockerfiles)")
+	buildCmd.Flags().StringArrayVar(&buildArgValues, "build-arg", nil, "build argument in KEY=VALUE form (can be repeated)")
+	buildCmd.Flags().BoolVar(&outputInitramfs, "output-initramfs", false, "produce an initramfs (.cpio.gz) instead of a rootfs image when building from a Dockerfile")
 
 	return buildCmd
 }
 
 func newServeCommand() *cobra.Command {
-    var (
-        addr   string
-        apiKey string
-        cors   string
-    )
+	var (
+		addr   string
+		apiKey string
+		cors   string
+	)
 
-    cmd := &cobra.Command{
-        Use:   "serve",
-        Short: "Run fledge in HTTP daemon mode",
-        RunE: func(cmd *cobra.Command, args []string) error {
-            ctx, cancel := setupSignalHandling()
-            defer cancel()
+	cmd := &cobra.Command{
+		Use:   "serve",
+		Short: "Run fledge in HTTP daemon mode",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := setupSignalHandling()
+			defer cancel()
 
-            if addr == "" {
-                if v := os.Getenv("FLEDGE_ADDR"); v != "" {
-                    addr = v
-                } else {
-                    addr = "127.0.0.1:7070"
-                }
-            }
-            if apiKey == "" {
-                apiKey = os.Getenv("FLEDGE_API_KEY")
-            }
-            origins := []string{}
-            if cors == "" {
-                cors = os.Getenv("FLEDGE_CORS_ORIGINS")
-            }
-            if cors != "" {
-                for _, p := range strings.Split(cors, ",") {
-                    p = strings.TrimSpace(p)
-                    if p != "" {
-                        origins = append(origins, p)
-                    }
-                }
-            }
+			if addr == "" {
+				if v := os.Getenv("FLEDGE_ADDR"); v != "" {
+					addr = v
+				} else {
+					addr = "127.0.0.1:7070"
+				}
+			}
+			if apiKey == "" {
+				apiKey = os.Getenv("FLEDGE_API_KEY")
+			}
+			origins := []string{}
+			if cors == "" {
+				cors = os.Getenv("FLEDGE_CORS_ORIGINS")
+			}
+			if cors != "" {
+				for _, p := range strings.Split(cors, ",") {
+					p = strings.TrimSpace(p)
+					if p != "" {
+						origins = append(origins, p)
+					}
+				}
+			}
 
-            opts := server.Options{Addr: addr, APIKey: apiKey, CORSOrigins: origins}
-            logging.Info("Starting fledge serve", "addr", opts.Addr)
+			opts := server.Options{Addr: addr, APIKey: apiKey, CORSOrigins: origins}
+			logging.Info("Starting fledge serve", "addr", opts.Addr)
 
-            // wrap build functions matching server signature
-            buildFn := func(ctx context.Context, cfg *config.Config, workDir, output string) error {
-                return buildOCIRootfs(ctx, cfg, workDir, output)
-            }
-            initramfsFn := func(ctx context.Context, cfg *config.Config, workDir, output string) error {
-                return buildInitramfs(ctx, cfg, workDir, output)
-            }
+			// wrap build functions matching server signature
+			buildFn := func(ctx context.Context, cfg *config.Config, workDir, output string) error {
+				return buildOCIRootfs(ctx, cfg, workDir, output)
+			}
+			initramfsFn := func(ctx context.Context, cfg *config.Config, workDir, output string) error {
+				return buildInitramfs(ctx, cfg, workDir, output)
+			}
 
-            return server.Start(ctx, opts, buildFn, initramfsFn)
-        },
-    }
+			return server.Start(ctx, opts, buildFn, initramfsFn)
+		},
+	}
 
-    cmd.Flags().StringVar(&addr, "addr", "", "address to bind (default 127.0.0.1:7070 or FLEDGE_ADDR)")
-    cmd.Flags().StringVar(&apiKey, "api-key", "", "API key required for requests (or FLEDGE_API_KEY)")
-    cmd.Flags().StringVar(&cors, "cors-origins", "", "comma-separated allowed CORS origins (or FLEDGE_CORS_ORIGINS)")
+	cmd.Flags().StringVar(&addr, "addr", "", "address to bind (default 127.0.0.1:7070 or FLEDGE_ADDR)")
+	cmd.Flags().StringVar(&apiKey, "api-key", "", "API key required for requests (or FLEDGE_API_KEY)")
+	cmd.Flags().StringVar(&cors, "cors-origins", "", "comma-separated allowed CORS origins (or FLEDGE_CORS_ORIGINS)")
 
-    return cmd
+	return cmd
 }
 
-func runBuild(configPath, outputPath string) error {
-	logging.Info("Starting Fledge build", "config", configPath)
+type buildCLIOptions struct {
+	ConfigPath      string
+	OutputPath      string
+	DockerfilePath  string
+	ContextDir      string
+	Target          string
+	BuildArgs       []string
+	OutputInitramfs bool
+	ConfigExplicit  bool
+}
 
-	// Setup signal handling for graceful cleanup
+func runBuild(opts buildCLIOptions) error {
 	ctx, cancel := setupSignalHandling()
 	defer cancel()
 
-	// Check if running as root (required for loop devices, mounts, etc.)
 	if os.Geteuid() != 0 {
 		logging.Error("Fledge requires root privileges for building artifacts")
 		return fmt.Errorf("must run as root (use sudo)")
 	}
 
-	// Load and validate configuration
-	cfg, err := loadConfig(configPath)
+	if opts.DockerfilePath != "" {
+		return runDockerfileBuild(ctx, opts)
+	}
+
+	if opts.OutputInitramfs || opts.ContextDir != "" || opts.Target != "" || len(opts.BuildArgs) > 0 {
+		return fmt.Errorf("--dockerfile is required when using --output-initramfs, --context, --target, or --build-arg")
+	}
+
+	return runConfigBuild(ctx, opts)
+}
+
+func runConfigBuild(ctx context.Context, opts buildCLIOptions) error {
+	logging.Info("Starting Fledge build", "config", opts.ConfigPath)
+
+	cfg, err := loadConfig(opts.ConfigPath)
 	if err != nil {
 		return err
 	}
 
-	// Determine output path
-	output := determineOutputPath(cfg, outputPath)
+	output := determineOutputPath(cfg, opts.OutputPath)
 	logging.Info("Output artifact", "path", output)
 
-	// Get working directory (where config file is located)
-	workDir, err := getWorkingDirectory(configPath)
+	workDir, err := getWorkingDirectory(opts.ConfigPath)
 	if err != nil {
 		return err
 	}
 
-	// Build based on strategy
 	switch cfg.Strategy {
-	case "oci_rootfs":
+	case config.StrategyOCIRootfs:
 		return buildOCIRootfs(ctx, cfg, workDir, output)
-	case "initramfs":
+	case config.StrategyInitramfs:
 		return buildInitramfs(ctx, cfg, workDir, output)
 	default:
 		return fmt.Errorf("unknown build strategy: %s", cfg.Strategy)
 	}
+}
+
+func runDockerfileBuild(ctx context.Context, opts buildCLIOptions) error {
+	if opts.ConfigExplicit {
+		return fmt.Errorf("--config cannot be used when building directly from a Dockerfile")
+	}
+
+	dfPath := opts.DockerfilePath
+	if dfPath == "" {
+		return fmt.Errorf("dockerfile path is required")
+	}
+
+	dfAbs, err := filepath.Abs(dfPath)
+	if err != nil {
+		return fmt.Errorf("failed to resolve dockerfile path: %w", err)
+	}
+
+	info, err := os.Stat(dfAbs)
+	if err != nil {
+		return fmt.Errorf("failed to access dockerfile %s: %w", dfAbs, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("dockerfile path %s is a directory", dfAbs)
+	}
+
+	contextDir := opts.ContextDir
+	if contextDir == "" {
+		contextDir = filepath.Dir(dfAbs)
+	} else if !filepath.IsAbs(contextDir) {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("failed to determine working directory: %w", err)
+		}
+		contextDir = filepath.Join(cwd, contextDir)
+	}
+
+	contextAbs, err := filepath.Abs(contextDir)
+	if err != nil {
+		return fmt.Errorf("failed to resolve context directory: %w", err)
+	}
+
+	ctxInfo, err := os.Stat(contextAbs)
+	if err != nil {
+		return fmt.Errorf("failed to access context directory %s: %w", contextAbs, err)
+	}
+	if !ctxInfo.IsDir() {
+		return fmt.Errorf("context path %s is not a directory", contextAbs)
+	}
+
+	buildArgs, err := parseBuildArgs(opts.BuildArgs)
+	if err != nil {
+		return err
+	}
+
+	workDir := contextAbs
+	dfForConfig := dfAbs
+	if rel, err := filepath.Rel(workDir, dfAbs); err == nil {
+		dfForConfig = rel
+	}
+
+	ctxForConfig := "."
+	if rel, err := filepath.Rel(workDir, contextAbs); err == nil {
+		ctxForConfig = rel
+	} else {
+		ctxForConfig = contextAbs
+	}
+
+	outputPath := opts.OutputPath
+	if outputPath == "" {
+		outputPath = defaultDockerfileOutput(contextAbs, opts.OutputInitramfs)
+	}
+
+	strategy := config.StrategyOCIRootfs
+	if opts.OutputInitramfs {
+		strategy = config.StrategyInitramfs
+	}
+
+	cfg := &config.Config{
+		Version:  "1",
+		Strategy: strategy,
+		Source: config.SourceConfig{
+			Dockerfile: dfForConfig,
+			Context:    ctxForConfig,
+			Target:     opts.Target,
+			BuildArgs:  buildArgs,
+		},
+	}
+
+	cfg.Agent = config.DefaultAgentConfig()
+	if strategy == config.StrategyOCIRootfs {
+		cfg.Filesystem = config.DefaultFilesystemConfig()
+	} else {
+		cfg.Source.BusyboxURL = config.DefaultBusyboxURL
+		cfg.Source.BusyboxSHA256 = config.DefaultBusyboxSHA256
+	}
+
+	logging.Info("Starting Dockerfile build",
+		"dockerfile", dfAbs,
+		"context", contextAbs,
+		"output", outputPath,
+		"format", strategy)
+
+	if strategy == config.StrategyOCIRootfs {
+		return buildOCIRootfs(ctx, cfg, workDir, outputPath)
+	}
+	return buildInitramfs(ctx, cfg, workDir, outputPath)
+}
+
+func parseBuildArgs(args []string) (map[string]string, error) {
+	if len(args) == 0 {
+		return nil, nil
+	}
+
+	result := make(map[string]string, len(args))
+	for _, arg := range args {
+		parts := strings.SplitN(arg, "=", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid --build-arg %q: must be in KEY=VALUE form", arg)
+		}
+
+		key := strings.TrimSpace(parts[0])
+		if key == "" {
+			return nil, fmt.Errorf("invalid --build-arg %q: key cannot be empty", arg)
+		}
+
+		result[key] = parts[1]
+	}
+
+	return result, nil
+}
+
+func defaultDockerfileOutput(contextDir string, initramfs bool) string {
+	base := filepath.Base(contextDir)
+	if base == "." || base == string(filepath.Separator) {
+		base = "plugin"
+	}
+
+	sanitized := sanitizeFilename(base)
+	if sanitized == "" {
+		sanitized = "plugin"
+	}
+
+	if initramfs {
+		return sanitized + ".cpio.gz"
+	}
+	return sanitized + ".img"
 }
 
 // setupSignalHandling configures graceful shutdown on SIGINT/SIGTERM.
