@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/moby/buildkit/cache/remotecache"
 	inlineremotecache "github.com/moby/buildkit/cache/remotecache/inline"
@@ -84,7 +85,37 @@ func BuildDockerfileToRootfs(ctx context.Context, dockerfile, contextDir, target
 		},
 	}
 
-	_, err = client.Solve(ctx, nil, solveOpt, nil)
+	statusCh := make(chan *bkclient.SolveStatus, 16)
+	var progressWG sync.WaitGroup
+	progressWG.Add(1)
+	go func() {
+		defer progressWG.Done()
+		for st := range statusCh {
+			for _, v := range st.Vertexes {
+				if v == nil {
+					continue
+				}
+				switch {
+				case v.Completed != nil:
+					log.Printf("embedded buildkit: step complete: %s", v.Name)
+				case v.Error != "":
+					log.Printf("embedded buildkit: step error: %s: %s", v.Name, v.Error)
+				case v.Started != nil:
+					log.Printf("embedded buildkit: step started: %s", v.Name)
+				}
+			}
+			for _, s := range st.Statuses {
+				if s == nil || s.Action == "" {
+					continue
+				}
+				log.Printf("embedded buildkit: %s", s.Action)
+			}
+		}
+	}()
+
+	_, err = client.Solve(ctx, nil, solveOpt, statusCh)
+	close(statusCh)
+	progressWG.Wait()
 	if err != nil {
 		return fmt.Errorf("embedded buildkit: solve failed: %w", err)
 	}
