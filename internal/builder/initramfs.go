@@ -2,6 +2,7 @@ package builder
 
 import (
 	_ "embed"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/volantvm/fledge/internal/config"
 	"github.com/volantvm/fledge/internal/logging"
+		"github.com/volantvm/fledge/internal/buildkit"
 	"github.com/volantvm/fledge/internal/utils"
 )
 
@@ -261,17 +263,48 @@ func (b *InitramfsBuilder) installAgent() error {
 
 // overlayDockerRootfsIfProvided builds (if needed) and overlays a Docker image rootfs onto the initramfs root.
 func (b *InitramfsBuilder) overlayDockerRootfsIfProvided() error {
-	// If Dockerfile provided, build to an ephemeral tag and treat as image source
-	imgRef := b.Config.Source.Image
+	// If Dockerfile provided, use BuildKit to export rootfs and overlay
 	if b.Config.Source.Dockerfile != "" {
-		tag, err := b.buildDockerImage()
-		if err != nil {
-			return err
+		dfPath := b.Config.Source.Dockerfile
+		if !filepath.IsAbs(dfPath) {
+			dfPath = filepath.Join(b.WorkDir, dfPath)
 		}
-		b.EphemeralTag = tag
-		imgRef = tag
+		ctxDir := b.Config.Source.Context
+		if ctxDir == "" {
+			ctxDir = filepath.Dir(dfPath)
+		}
+		if !filepath.IsAbs(ctxDir) {
+			ctxDir = filepath.Join(b.WorkDir, ctxDir)
+		}
+
+		exportDir, err := os.MkdirTemp("", "fledge-init-df-rootfs-*")
+		if err != nil {
+			return fmt.Errorf("failed to create export dir: %w", err)
+		}
+		defer os.RemoveAll(exportDir)
+
+		logging.Info("Building Dockerfile via BuildKit for initramfs overlay", "dockerfile", dfPath, "context", ctxDir)
+		err = buildkit.BuildDockerfileToRootfs(context.Background(), buildkit.DockerfileBuildOptions{
+			Address:    buildkit.DefaultAddress(),
+			Dockerfile: dfPath,
+			ContextDir: ctxDir,
+			Target:     b.Config.Source.Target,
+			BuildArgs:  b.Config.Source.BuildArgs,
+			DestDir:    exportDir,
+		})
+		if err != nil {
+			return fmt.Errorf("buildkit build failed: %w", err)
+		}
+
+		// Overlay exported rootfs (exportDir contains the full rootfs)
+		if err := overlayCopyPreserve(exportDir, b.RootfsDir); err != nil {
+			return fmt.Errorf("failed to overlay buildkit rootfs: %w", err)
+		}
+		return nil
 	}
 
+	// If an image reference is provided, fetch via skopeo/umoci and overlay
+	imgRef := b.Config.Source.Image
 	if imgRef == "" {
 		// Nothing to overlay
 		return nil
@@ -319,51 +352,7 @@ func (b *InitramfsBuilder) overlayDockerRootfsIfProvided() error {
 		return fmt.Errorf("failed to overlay rootfs: %w", err)
 	}
 
-	// Cleanup ephemeral image
-	if b.EphemeralTag != "" {
-		cmd := exec.Command("docker", "rmi", "-f", b.EphemeralTag)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			logging.Warn("Failed to remove ephemeral docker image", "tag", b.EphemeralTag, "error", err, "output", string(output))
-		} else {
-			logging.Debug("Removed ephemeral docker image", "tag", b.EphemeralTag)
-		}
-	}
-
 	return nil
-}
-
-// buildDockerImage builds the configured Dockerfile and returns the ephemeral tag.
-func (b *InitramfsBuilder) buildDockerImage() (string, error) {
-	df := b.Config.Source.Dockerfile
-	dfPath := df
-	if !filepath.IsAbs(dfPath) {
-		dfPath = filepath.Join(b.WorkDir, dfPath)
-	}
-
-	ctxDir := b.Config.Source.Context
-	if ctxDir == "" {
-		ctxDir = filepath.Dir(dfPath)
-	}
-	if !filepath.IsAbs(ctxDir) {
-		ctxDir = filepath.Join(b.WorkDir, ctxDir)
-	}
-
-	tag := fmt.Sprintf("fledge-tmp-%d", time.Now().UnixNano())
-	args := []string{"build", "-t", tag, "-f", dfPath}
-	if tgt := b.Config.Source.Target; tgt != "" {
-		args = append(args, "--target", tgt)
-	}
-	for k, v := range b.Config.Source.BuildArgs {
-		args = append(args, "--build-arg", fmt.Sprintf("%s=%s", k, v))
-	}
-	args = append(args, ctxDir)
-
-	logging.Info("Building Dockerfile for initramfs overlay", "dockerfile", dfPath, "context", ctxDir, "tag", tag)
-	cmd := exec.Command("docker", args...)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("docker build failed: %w\nOutput: %s", err, string(output))
-	}
-	return tag, nil
 }
 
 // overlayCopyPreserve copies srcRoot onto dstRoot preserving file modes and symlinks.
