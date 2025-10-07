@@ -125,7 +125,6 @@ func BuildDockerfileToRootfs(ctx context.Context, dockerfile, contextDir, target
 	}()
 
 	_, err = client.Solve(ctx, nil, solveOpt, statusCh)
-	close(statusCh)
 	progressWG.Wait()
 	if err != nil {
 		return fmt.Errorf("embedded buildkit: solve failed: %w", err)
