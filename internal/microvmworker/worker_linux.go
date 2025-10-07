@@ -8,14 +8,13 @@ import (
     "os"
     "path/filepath"
 
-    ch "github.com/volantvm/volant/internal/server/orchestrator/cloudhypervisor"
-    "github.com/volantvm/volant/internal/server/orchestrator/runtime"
+    ch "github.com/volantvm/fledge/internal/launcher"
 )
 
 // Worker is a skeleton for a BuildKit worker that executes steps inside
 // Cloud Hypervisor microVMs.
 type Worker struct {
-    Launcher      runtime.Launcher
+    Launcher      *ch.Launcher
     RuntimeDir    string
     KernelBZImage string
     KernelVMLinux string
@@ -56,7 +55,7 @@ func NewFromEnv(runtimeDir string) (*Worker, error) {
 // BootVM boots a minimal microVM for executing build steps.
 // This is a skeleton; the actual worker will prepare a base rootfs and expose
 // a mechanism to run commands and capture filesystem diffs between steps.
-func (w *Worker) BootVM(ctx context.Context, name string, spec runtime.LaunchSpec) (runtime.Instance, error) {
+func (w *Worker) BootVM(ctx context.Context, name string, spec ch.LaunchSpec) (ch.Instance, error) {
     if w.Launcher == nil {
         return nil, fmt.Errorf("microvmworker: launcher not configured")
     }

@@ -35,8 +35,9 @@ type DockerfileBuildOptions struct {
 // BuildDockerfileToRootfs uses BuildKit's dockerfile.v0 frontend to build the given Dockerfile
 // and exports the result to a local directory containing the built root filesystem.
 func BuildDockerfileToRootfs(ctx context.Context, opts DockerfileBuildOptions) error {
-    // Prefer embedded mode when explicitly requested via env
-    if strings.EqualFold(strings.TrimSpace(os.Getenv("FLEDGE_BUILDKIT_MODE")), "embedded") {
+    // Embedded is now the default unless explicitly set to daemon/external
+    mode := strings.ToLower(strings.TrimSpace(os.Getenv("FLEDGE_BUILDKIT_MODE")))
+    if mode == "" || mode == "embedded" {
         return embedded.BuildDockerfileToRootfs(ctx, opts.Dockerfile, opts.ContextDir, opts.Target, opts.BuildArgs, opts.DestDir)
     }
 

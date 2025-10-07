@@ -7,7 +7,6 @@ require (
 	github.com/moby/buildkit v0.13.1
 	github.com/schollz/progressbar/v3 v3.18.0
 	github.com/spf13/cobra v1.8.1
-	github.com/volantvm/volant v0.0.0-00010101000000-000000000000
 )
 
 require (
@@ -72,4 +71,4 @@ require (
 	google.golang.org/protobuf v1.34.1 // indirect
 )
 
-replace github.com/volantvm/volant => /Users/marcxavier/Desktop/work/volant
+// no local replaces

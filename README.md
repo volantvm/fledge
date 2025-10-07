@@ -103,6 +103,23 @@ Boots a real VM—networked, isolated, live in seconds.
 
 ---
 
+## Embedded BuildKit (default)
+
+Fledge now uses an embedded BuildKit solver by default (no external buildkitd). This path is Linux-only and runs build steps inside Cloud Hypervisor microVMs.
+
+Environment variables:
+- `CLOUDHYPERVISOR` — path to the `cloud-hypervisor` binary (default: `cloud-hypervisor` in PATH)
+- `FLEDGE_KERNEL_BZIMAGE` — path to bzImage (default: `/var/lib/volant/kernel/bzImage`)
+- `FLEDGE_KERNEL_VMLINUX` — path to vmlinux (used if bzImage not provided; default: `/var/lib/volant/kernel/vmlinux`)
+
+Switching modes:
+- Embedded (default): no env required
+- External daemon: set `FLEDGE_BUILDKIT_MODE=daemon` and point to your buildkitd via `FLEDGE_BUILDKIT_ADDR` if needed
+
+Note: On non-Linux platforms, the embedded path is not available; use the external daemon mode instead.
+
+---
+
 ## Build Strategies
 
 | Strategy | When to Use | Output | Typical Size |
