@@ -1,12 +1,14 @@
 package buildkit
 
 import (
-	"context"
-	"fmt"
-	"os"
-	"path/filepath"
+    "context"
+    "fmt"
+    "os"
+    "path/filepath"
+    "strings"
 
-	bkclient "github.com/moby/buildkit/client"
+    bkclient "github.com/moby/buildkit/client"
+    embedded "github.com/volantvm/fledge/internal/buildkit/embedded"
 )
 
 // Options for building a Dockerfile to a local rootfs directory using BuildKit.
@@ -33,10 +35,15 @@ type DockerfileBuildOptions struct {
 // BuildDockerfileToRootfs uses BuildKit's dockerfile.v0 frontend to build the given Dockerfile
 // and exports the result to a local directory containing the built root filesystem.
 func BuildDockerfileToRootfs(ctx context.Context, opts DockerfileBuildOptions) error {
-	addr := opts.Address
-	if addr == "" {
-		addr = DefaultAddress()
-	}
+    // Prefer embedded mode when explicitly requested via env
+    if strings.EqualFold(strings.TrimSpace(os.Getenv("FLEDGE_BUILDKIT_MODE")), "embedded") {
+        return embedded.BuildDockerfileToRootfs(ctx, opts.Dockerfile, opts.ContextDir, opts.Target, opts.BuildArgs, opts.DestDir)
+    }
+
+    addr := opts.Address
+    if addr == "" {
+        addr = DefaultAddress()
+    }
 
 	if err := os.MkdirAll(opts.DestDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create dest dir: %w", err)
