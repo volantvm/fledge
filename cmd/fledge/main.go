@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/volantvm/fledge/internal/builder"
 	"github.com/volantvm/fledge/internal/config"
+	"github.com/volantvm/fledge/internal/server"
 	"github.com/volantvm/fledge/internal/logging"
 )
 
@@ -62,6 +63,7 @@ ready-to-deploy artifacts following the Filesystem Hierarchy Standard (FHS).`,
 	// Add subcommands
 	rootCmd.AddCommand(newVersionCommand())
 	rootCmd.AddCommand(newBuildCommand())
+	rootCmd.AddCommand(newServeCommand())
 
 	return rootCmd
 }
@@ -113,6 +115,65 @@ Examples:
 	buildCmd.Flags().StringVarP(&outputPath, "output", "o", "", "output file path (default: auto-generated from config)")
 
 	return buildCmd
+}
+
+func newServeCommand() *cobra.Command {
+    var (
+        addr   string
+        apiKey string
+        cors   string
+    )
+
+    cmd := &cobra.Command{
+        Use:   "serve",
+        Short: "Run fledge in HTTP daemon mode",
+        RunE: func(cmd *cobra.Command, args []string) error {
+            ctx, cancel := setupSignalHandling()
+            defer cancel()
+
+            if addr == "" {
+                if v := os.Getenv("FLEDGE_ADDR"); v != "" {
+                    addr = v
+                } else {
+                    addr = "127.0.0.1:7070"
+                }
+            }
+            if apiKey == "" {
+                apiKey = os.Getenv("FLEDGE_API_KEY")
+            }
+            origins := []string{}
+            if cors == "" {
+                cors = os.Getenv("FLEDGE_CORS_ORIGINS")
+            }
+            if cors != "" {
+                for _, p := range strings.Split(cors, ",") {
+                    p = strings.TrimSpace(p)
+                    if p != "" {
+                        origins = append(origins, p)
+                    }
+                }
+            }
+
+            opts := server.Options{Addr: addr, APIKey: apiKey, CORSOrigins: origins}
+            logging.Info("Starting fledge serve", "addr", opts.Addr)
+
+            // wrap build functions matching server signature
+            buildFn := func(ctx context.Context, cfg *config.Config, workDir, output string) error {
+                return buildOCIRootfs(ctx, cfg, workDir, output)
+            }
+            initramfsFn := func(ctx context.Context, cfg *config.Config, workDir, output string) error {
+                return buildInitramfs(ctx, cfg, workDir, output)
+            }
+
+            return server.Start(ctx, opts, buildFn, initramfsFn)
+        },
+    }
+
+    cmd.Flags().StringVar(&addr, "addr", "", "address to bind (default 127.0.0.1:7070 or FLEDGE_ADDR)")
+    cmd.Flags().StringVar(&apiKey, "api-key", "", "API key required for requests (or FLEDGE_API_KEY)")
+    cmd.Flags().StringVar(&cors, "cors-origins", "", "comma-separated allowed CORS origins (or FLEDGE_CORS_ORIGINS)")
+
+    return cmd
 }
 
 func runBuild(configPath, outputPath string) error {

@@ -11,9 +11,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"context"
 
 	"github.com/schollz/progressbar/v3"
 	"github.com/volantvm/fledge/internal/config"
+		"github.com/volantvm/fledge/internal/buildkit"
 	"github.com/volantvm/fledge/internal/logging"
 )
 
@@ -44,6 +46,7 @@ type OCIRootfsBuilder struct {
 	MountPoint     string
 	LoopDevicePath string
 	EphemeralTag   string
+		RootfsReady   bool
 }
 
 // NewOCIRootfsBuilder creates a new OCI rootfs builder.
@@ -117,6 +120,10 @@ func (b *OCIRootfsBuilder) Build() error {
 func (b *OCIRootfsBuilder) downloadOCIImage() error {
 	imageRef := b.Config.Source.Image
 
+	if b.RootfsReady {
+		logging.Debug("Skipping OCI image download: rootfs built via BuildKit")
+		return nil
+	}
 	// Try local Docker daemon first
 	cmd := exec.Command("skopeo", "copy",
 		fmt.Sprintf("docker-daemon:%s", imageRef),
@@ -147,6 +154,10 @@ func (b *OCIRootfsBuilder) downloadOCIImage() error {
 
 // unpackOCIImage unpacks the OCI image layers using umoci.
 func (b *OCIRootfsBuilder) unpackOCIImage() error {
+	if b.RootfsReady {
+		logging.Debug("Skipping OCI unpack: rootfs built via BuildKit")
+		return nil
+	}
 	cmd := exec.Command("umoci", "unpack",
 		"--image", fmt.Sprintf("%s:latest", b.OciLayoutPath),
 		b.UnpackedPath)
@@ -685,18 +696,19 @@ func copyFile(src, dst string) error {
 }
 
 // buildDockerfileIfNeeded builds a Dockerfile into a local image if configured.
+
+// buildDockerfileIfNeeded uses BuildKit to build the configured Dockerfile directly into the unpacked rootfs.
 func (b *OCIRootfsBuilder) buildDockerfileIfNeeded() error {
 	df := b.Config.Source.Dockerfile
 	if df == "" {
 		return nil
 	}
 
-	// Resolve Dockerfile and context paths relative to workdir if needed
+	// Resolve Dockerfile and context paths
 	dfPath := df
 	if !filepath.IsAbs(dfPath) {
 		dfPath = filepath.Join(b.WorkDir, dfPath)
 	}
-
 	ctxDir := b.Config.Source.Context
 	if ctxDir == "" {
 		ctxDir = filepath.Dir(dfPath)
@@ -705,30 +717,25 @@ func (b *OCIRootfsBuilder) buildDockerfileIfNeeded() error {
 		ctxDir = filepath.Join(b.WorkDir, ctxDir)
 	}
 
-	// Generate ephemeral tag
-	tag := fmt.Sprintf("fledge-tmp-%d", time.Now().UnixNano())
-
-	// Build command
-	args := []string{"build", "-t", tag, "-f", dfPath}
-	if tgt := b.Config.Source.Target; tgt != "" {
-		args = append(args, "--target", tgt)
-	}
-	// Build args
-	for k, v := range b.Config.Source.BuildArgs {
-		args = append(args, "--build-arg", fmt.Sprintf("%s=%s", k, v))
-	}
-	args = append(args, ctxDir)
-
-	logging.Info("Building Dockerfile", "dockerfile", dfPath, "context", ctxDir, "tag", tag)
-	cmd := exec.Command("docker", args...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("docker build failed: %w\nOutput: %s", err, string(output))
+	// Destination rootfs directory
+	destRootfs := filepath.Join(b.UnpackedPath, "rootfs")
+	if err := os.MkdirAll(destRootfs, 0755); err != nil {
+		return fmt.Errorf("failed to create dest rootfs dir: %w", err)
 	}
 
-	b.EphemeralTag = tag
-	// Use the built image as source
-	b.Config.Source.Image = tag
-	logging.Info("Docker build complete", "tag", tag)
+	logging.Info("Building Dockerfile via BuildKit", "dockerfile", dfPath, "context", ctxDir, "dest", destRootfs)
+	if err := buildkit.BuildDockerfileToRootfs(context.Background(), buildkit.DockerfileBuildOptions{
+		Address:    buildkit.DefaultAddress(),
+		Dockerfile: dfPath,
+		ContextDir: ctxDir,
+		Target:     b.Config.Source.Target,
+		BuildArgs:  b.Config.Source.BuildArgs,
+		DestDir:    destRootfs,
+	}); err != nil {
+		return fmt.Errorf("buildkit build failed: %w", err)
+	}
+
+	b.RootfsReady = true
+	logging.Info("Dockerfile build complete via BuildKit; rootfs prepared")
 	return nil
 }
