@@ -2,6 +2,7 @@ package builder
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,11 +12,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"context"
 
 	"github.com/schollz/progressbar/v3"
+	"github.com/volantvm/fledge/internal/buildkit"
 	"github.com/volantvm/fledge/internal/config"
-		"github.com/volantvm/fledge/internal/buildkit"
 	"github.com/volantvm/fledge/internal/logging"
 )
 
@@ -46,7 +46,7 @@ type OCIRootfsBuilder struct {
 	MountPoint     string
 	LoopDevicePath string
 	EphemeralTag   string
-		RootfsReady   bool
+	RootfsReady    bool
 }
 
 // NewOCIRootfsBuilder creates a new OCI rootfs builder.

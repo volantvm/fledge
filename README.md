@@ -92,6 +92,20 @@ Notes:
 - `build_args` are passed through to `docker build`
 - Ephemeral images/tags created during the build are cleaned up automatically
 
+### Build directly from a Dockerfile (no fledge.toml)
+
+```bash
+sudo fledge build ./Dockerfile
+# → outputs <directory>.img + <directory>.manifest.json
+```
+
+Flags available in direct-build mode:
+- `--context` — override the build context directory (defaults to the Dockerfile's directory)
+- `--target` — select a multi-stage build target
+- `--build-arg KEY=VALUE` — pass one or more build arguments
+- `--output` — rename the resulting artifact
+- `--output-initramfs` — produce an initramfs (`.cpio.gz`) instead of a rootfs image
+
 ### Install and run it
 
 ```bash

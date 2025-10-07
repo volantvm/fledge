@@ -1,14 +1,14 @@
 package buildkit
 
 import (
-    "context"
-    "fmt"
-    "os"
-    "path/filepath"
-    "strings"
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
-    bkclient "github.com/moby/buildkit/client"
-    embedded "github.com/volantvm/fledge/internal/buildkit/embedded"
+	bkclient "github.com/moby/buildkit/client"
+	embedded "github.com/volantvm/fledge/internal/buildkit/embedded"
 )
 
 // Options for building a Dockerfile to a local rootfs directory using BuildKit.
@@ -35,16 +35,16 @@ type DockerfileBuildOptions struct {
 // BuildDockerfileToRootfs uses BuildKit's dockerfile.v0 frontend to build the given Dockerfile
 // and exports the result to a local directory containing the built root filesystem.
 func BuildDockerfileToRootfs(ctx context.Context, opts DockerfileBuildOptions) error {
-    // Embedded is now the default unless explicitly set to daemon/external
-    mode := strings.ToLower(strings.TrimSpace(os.Getenv("FLEDGE_BUILDKIT_MODE")))
-    if mode == "" || mode == "embedded" {
-        return embedded.BuildDockerfileToRootfs(ctx, opts.Dockerfile, opts.ContextDir, opts.Target, opts.BuildArgs, opts.DestDir)
-    }
+	// Embedded is now the default unless explicitly set to daemon/external
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("FLEDGE_BUILDKIT_MODE")))
+	if mode == "" || mode == "embedded" {
+		return embedded.BuildDockerfileToRootfs(ctx, opts.Dockerfile, opts.ContextDir, opts.Target, opts.BuildArgs, opts.DestDir)
+	}
 
-    addr := opts.Address
-    if addr == "" {
-        addr = DefaultAddress()
-    }
+	addr := opts.Address
+	if addr == "" {
+		addr = DefaultAddress()
+	}
 
 	if err := os.MkdirAll(opts.DestDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create dest dir: %w", err)
@@ -76,7 +76,7 @@ func BuildDockerfileToRootfs(ctx context.Context, opts DockerfileBuildOptions) e
 		Frontend:      "dockerfile.v0",
 		FrontendAttrs: frontendAttrs,
 		LocalDirs: map[string]string{
-			"context":   opts.ContextDir,
+			"context":    opts.ContextDir,
 			"dockerfile": dfDir,
 		},
 		Exports: []bkclient.ExportEntry{
