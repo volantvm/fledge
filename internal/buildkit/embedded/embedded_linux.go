@@ -18,9 +18,9 @@ import (
 	localremotecache "github.com/moby/buildkit/cache/remotecache/local"
 	bkclient "github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/control"
-	"github.com/moby/buildkit/control/gateway"
 	"github.com/moby/buildkit/frontend"
 	"github.com/moby/buildkit/frontend/dockerfile/builder"
+	fgateway "github.com/moby/buildkit/frontend/gateway"
 	"github.com/moby/buildkit/frontend/gateway/forwarder"
 	"github.com/moby/buildkit/identity"
 	"github.com/moby/buildkit/session"
@@ -105,10 +105,21 @@ func BuildDockerfileToRootfs(ctx context.Context, dockerfile, contextDir, target
 				}
 			}
 			for _, s := range st.Statuses {
-				if s == nil || s.Action == "" {
+				if s == nil {
 					continue
 				}
-				log.Printf("embedded buildkit: %s", s.Action)
+				name := s.Name
+				if name == "" {
+					name = s.ID
+				}
+				if name == "" {
+					continue
+				}
+				if s.Total > 0 {
+					log.Printf("embedded buildkit: status %s %d/%d", name, s.Current, s.Total)
+					continue
+				}
+				log.Printf("embedded buildkit: status %s", name)
 			}
 		}
 	}()
@@ -221,7 +232,7 @@ func newEmbeddedClient(ctx context.Context, stateDir string) (_ *bkclient.Client
 
 	frontends := map[string]frontend.Frontend{
 		"dockerfile.v0": forwarder.NewGatewayForwarder(wc.Infos(), builder.Build),
-		"gateway.v0":    gateway.NewGatewayFrontend(wc.Infos()),
+		"gateway.v0":    fgateway.NewGatewayFrontend(wc.Infos()),
 	}
 
 	cacheMgr := solver.NewCacheManager(context.TODO(), identity.NewID(), cacheStorage, worker.NewCacheResultStorage(wc))
@@ -268,7 +279,7 @@ func newEmbeddedClient(ctx context.Context, stateDir string) (_ *bkclient.Client
 		return listener.Dial()
 	}
 
-	client, err := bkclient.New(ctx, "", bkclient.WithContextDialer(dialer), bkclient.WithBlock())
+	client, err := bkclient.New(ctx, "", bkclient.WithContextDialer(dialer))
 	if err != nil {
 		server.Stop()
 		listener.Close()
