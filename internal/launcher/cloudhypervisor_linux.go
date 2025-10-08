@@ -125,7 +125,7 @@ func (l *Launcher) Launch(ctx context.Context, spec LaunchSpec) (Instance, error
 	}
 
 	// Default cmdline
-	cmdline := []string{"console=hvc0", "panic=1", "pci=off"}
+	cmdline := []string{"console=ttyS0", "panic=1", "pci=off"}
 	if spec.DiskPath != "" {
 		// Use virtio-blk as vda
 		cmdline = append(cmdline, "root=/dev/vda", "rw")
