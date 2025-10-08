@@ -221,6 +221,14 @@ func (e *Executor) prepareDiskImage(ctx context.Context, rootDir string) (string
 }
 
 func (e *Executor) populateDisk(ctx context.Context, imagePath, rootDir string, process executor.ProcessInfo) error {
+	shellPath := filepath.Join(rootDir, "bin", "sh")
+	if _, err := os.Stat(shellPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("microvm executor: rootfs missing /bin/sh; ensure the base image provides a POSIX shell")
+		}
+		return fmt.Errorf("microvm executor: stat shell: %w", err)
+	}
+
 	return e.withDiskMount(ctx, imagePath, func(mountPoint string) error {
 		if err := clearDir(mountPoint); err != nil {
 			return fmt.Errorf("clear mount: %w", err)
