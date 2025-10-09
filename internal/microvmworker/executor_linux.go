@@ -324,6 +324,10 @@ func (e *Executor) writeInitFiles(ctx context.Context, mountPoint string, proces
 		return fmt.Errorf("write .volant_init: %w", err)
 	}
 
+	if err := e.ensureKestrelShim(mountPoint); err != nil {
+		return err
+	}
+
 	for _, name := range []string{"stdout", "stderr"} {
 		path := filepath.Join(controlDir, name)
 		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
@@ -333,6 +337,50 @@ func (e *Executor) writeInitFiles(ctx context.Context, mountPoint string, proces
 		}
 	}
 
+	return nil
+}
+
+func (e *Executor) ensureKestrelShim(mountPoint string) error {
+	kestrelPath := filepath.Join(mountPoint, "bin", "kestrel")
+	target := "/.fledge/init"
+
+	info, err := os.Lstat(kestrelPath)
+	switch {
+	case err == nil:
+		if info.Mode()&os.ModeSymlink != 0 {
+			if current, readErr := os.Readlink(kestrelPath); readErr == nil && current == target {
+				return nil
+			}
+		}
+		backupPath := kestrelPath + ".orig"
+		if removeErr := os.Remove(backupPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return fmt.Errorf("microvm executor: remove stale kestrel backup: %w", removeErr)
+		}
+		if err := os.Rename(kestrelPath, backupPath); err != nil {
+			return fmt.Errorf("microvm executor: backup existing kestrel binary: %w", err)
+		}
+		logging.Warn("microvm executor: replacing guest kestrel binary with build init shim", "original", kestrelPath, "backup", backupPath)
+	case errors.Is(err, os.ErrNotExist):
+		// Nothing to back up
+	default:
+		return fmt.Errorf("microvm executor: inspect kestrel binary: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(kestrelPath), 0o755); err != nil {
+		return fmt.Errorf("microvm executor: ensure /bin directory: %w", err)
+	}
+	if err := os.Symlink(target, kestrelPath); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			if removeErr := os.Remove(kestrelPath); removeErr != nil {
+				return fmt.Errorf("microvm executor: replace existing kestrel shim: %w", removeErr)
+			}
+			if err := os.Symlink(target, kestrelPath); err != nil {
+				return fmt.Errorf("microvm executor: relink kestrel shim: %w", err)
+			}
+			return nil
+		}
+		return fmt.Errorf("microvm executor: link kestrel shim: %w", err)
+	}
 	return nil
 }
 
