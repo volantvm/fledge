@@ -22,6 +22,7 @@ import (
 	"github.com/moby/buildkit/executor"
 	resourcestypes "github.com/moby/buildkit/executor/resources/types"
 	gatewayapi "github.com/moby/buildkit/frontend/gateway/pb"
+	"github.com/volantvm/fledge/internal/builder"
 	"github.com/volantvm/fledge/internal/config"
 	ch "github.com/volantvm/fledge/internal/launcher"
 	"github.com/volantvm/fledge/internal/logging"
@@ -34,10 +35,12 @@ type Executor struct {
 	workspace  string
 	supportDir string
 
-	tempMu      sync.Mutex
-	nextVMID    int
-	busyboxMu   sync.Mutex
-	busyboxPath string
+	tempMu        sync.Mutex
+	nextVMID      int
+	busyboxMu     sync.Mutex
+	busyboxPath   string
+	agentStubMu   sync.Mutex
+	agentStubPath string
 
 	baseKernel string
 }
@@ -97,13 +100,20 @@ func (e *Executor) Run(ctx context.Context, id string, root executor.Mount, moun
 	}
 
 	vmName := e.allocateVMName(id)
+	initramfsPath, initramfsCleanup, err := e.buildInitramfs(ctx, vmName)
+	if err != nil {
+		return nil, err
+	}
+	defer initramfsCleanup()
+
 	inst, err := e.worker.BootVM(ctx, vmName, ch.LaunchSpec{
-		Name:         vmName,
-		CPUCores:     2,
-		MemoryMB:     1536,
-		KernelArgs:   e.baseKernel,
-		DiskPath:     imagePath,
-		ReadOnlyRoot: false,
+		Name:          vmName,
+		CPUCores:      2,
+		MemoryMB:      1536,
+		KernelArgs:    e.baseKernel,
+		DiskPath:      imagePath,
+		ReadOnlyRoot:  false,
+		InitramfsPath: initramfsPath,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("microvm executor: launch vm: %w", err)
@@ -421,6 +431,79 @@ func (e *Executor) installSupportBinaries(ctx context.Context, mountPoint, contr
 	}
 
 	return nil
+}
+
+func (e *Executor) buildInitramfs(ctx context.Context, vmName string) (string, func(), error) {
+	busyboxHostPath, err := e.ensureBusybox(ctx)
+	if err != nil {
+		return "", func() {}, fmt.Errorf("microvm executor: prepare busybox for initramfs: %w", err)
+	}
+
+	agentStubPath, err := e.ensureAgentStub()
+	if err != nil {
+		return "", func() {}, err
+	}
+
+	cfg := &config.Config{
+		Version:  "1",
+		Strategy: config.StrategyInitramfs,
+		Agent: &config.AgentConfig{
+			SourceStrategy: config.AgentSourceLocal,
+			Path:           agentStubPath,
+		},
+		Source: config.SourceConfig{
+			BusyboxURL:    config.DefaultBusyboxURL,
+			BusyboxSHA256: config.DefaultBusyboxSHA256,
+		},
+	}
+
+	if err := config.Validate(cfg); err != nil {
+		return "", func() {}, fmt.Errorf("microvm executor: initramfs config invalid: %w", err)
+	}
+
+	outputPath := filepath.Join(e.supportDir, fmt.Sprintf("initramfs-%s-%d.cpio.gz", vmName, time.Now().UnixNano()))
+	b := builder.NewInitramfsBuilder(cfg, e.supportDir, outputPath)
+	b.BusyboxLocalPath = busyboxHostPath
+
+	if err := b.Build(); err != nil {
+		os.Remove(outputPath)
+		return "", func() {}, fmt.Errorf("microvm executor: build initramfs: %w", err)
+	}
+
+	cleanup := func() {
+		if err := os.Remove(outputPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			logging.Warn("microvm executor: cleanup initramfs", "path", outputPath, "error", err)
+		}
+	}
+
+	return outputPath, cleanup, nil
+}
+
+// ensureAgentStub provides a lightweight kestrel replacement so the initramfs
+// builder can satisfy default-mode requirements without downloading releases.
+func (e *Executor) ensureAgentStub() (string, error) {
+	e.agentStubMu.Lock()
+	defer e.agentStubMu.Unlock()
+
+	if e.agentStubPath != "" {
+		if _, err := os.Stat(e.agentStubPath); err == nil {
+			return e.agentStubPath, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("microvm executor: stat agent stub: %w", err)
+		}
+	}
+
+	stubPath := filepath.Join(e.supportDir, "kestrel-stub.sh")
+	script := `#!/bin/sh
+echo "microvm executor: kestrel fallback stub invoked" >&2
+exec /bin/sh "$@"
+`
+	if err := os.WriteFile(stubPath, []byte(script), 0o755); err != nil {
+		return "", fmt.Errorf("microvm executor: write agent stub: %w", err)
+	}
+
+	e.agentStubPath = stubPath
+	return stubPath, nil
 }
 
 func (e *Executor) ensureBusybox(ctx context.Context) (string, error) {

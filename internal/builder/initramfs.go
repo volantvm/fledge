@@ -1,8 +1,8 @@
 package builder
 
 import (
-	_ "embed"
 	"context"
+	_ "embed"
 	"fmt"
 	"io"
 	"os"
@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/volantvm/fledge/internal/buildkit"
 	"github.com/volantvm/fledge/internal/config"
 	"github.com/volantvm/fledge/internal/logging"
-		"github.com/volantvm/fledge/internal/buildkit"
 	"github.com/volantvm/fledge/internal/utils"
 )
 
@@ -27,11 +27,12 @@ const (
 
 // InitramfsBuilder builds initramfs archives following the Volant specification.
 type InitramfsBuilder struct {
-	Config       *config.Config
-	WorkDir      string
-	RootfsDir    string
-	OutputPath   string
-	EphemeralTag string
+	Config           *config.Config
+	WorkDir          string
+	RootfsDir        string
+	OutputPath       string
+	EphemeralTag     string
+	BusyboxLocalPath string
 }
 
 // NewInitramfsBuilder creates a new initramfs builder.
@@ -181,29 +182,36 @@ func (b *InitramfsBuilder) compileInit() error {
 	return nil
 }
 
-// installBusybox downloads and installs busybox with symlinks.
+// installBusybox installs busybox with symlinks, sourcing from host when available.
 func (b *InitramfsBuilder) installBusybox() error {
-	logging.Info("Installing busybox", "url", b.Config.Source.BusyboxURL)
-
-	// Download busybox
-	tmpPath, err := utils.DownloadToTempFile(b.Config.Source.BusyboxURL, true)
-	if err != nil {
-		return fmt.Errorf("failed to download busybox: %w", err)
-	}
-	defer os.Remove(tmpPath)
-
-	// Verify checksum if provided
-	if b.Config.Source.BusyboxSHA256 != "" {
-		logging.Info("Verifying busybox checksum")
-		if err := utils.VerifyChecksum(tmpPath, b.Config.Source.BusyboxSHA256); err != nil {
-			return fmt.Errorf("busybox checksum verification failed: %w", err)
-		}
-	}
-
-	// Copy busybox to /bin/busybox
 	busyboxPath := filepath.Join(b.RootfsDir, "bin", "busybox")
-	if err := CopyFile(tmpPath, busyboxPath, 0755); err != nil {
-		return fmt.Errorf("failed to copy busybox: %w", err)
+
+	if b.BusyboxLocalPath != "" {
+		logging.Info("Installing busybox from host", "path", b.BusyboxLocalPath)
+		if err := CopyFile(b.BusyboxLocalPath, busyboxPath, 0755); err != nil {
+			return fmt.Errorf("failed to copy busybox from host: %w", err)
+		}
+	} else {
+		logging.Info("Installing busybox", "url", b.Config.Source.BusyboxURL)
+
+		// Download busybox
+		tmpPath, err := utils.DownloadToTempFile(b.Config.Source.BusyboxURL, true)
+		if err != nil {
+			return fmt.Errorf("failed to download busybox: %w", err)
+		}
+		defer os.Remove(tmpPath)
+
+		// Verify checksum if provided
+		if b.Config.Source.BusyboxSHA256 != "" {
+			logging.Info("Verifying busybox checksum")
+			if err := utils.VerifyChecksum(tmpPath, b.Config.Source.BusyboxSHA256); err != nil {
+				return fmt.Errorf("busybox checksum verification failed: %w", err)
+			}
+		}
+
+		if err := CopyFile(tmpPath, busyboxPath, 0755); err != nil {
+			return fmt.Errorf("failed to copy busybox: %w", err)
+		}
 	}
 
 	// Create busybox symlinks

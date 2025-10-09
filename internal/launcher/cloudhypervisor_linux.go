@@ -22,6 +22,7 @@ type LaunchSpec struct {
 	KernelPath   string // optional override; if empty, defaults from Launcher
 	DiskPath     string // path to rootfs image (virtio-blk)
 	ReadOnlyRoot bool
+	InitramfsPath string // optional initramfs archive supplied via --initramfs
 }
 
 // Instance represents a running VM process.
@@ -148,6 +149,21 @@ func (l *Launcher) Launch(ctx context.Context, spec LaunchSpec) (Instance, error
 			ro = "on"
 		}
 		args = append(args, "--disk", fmt.Sprintf("path=%s,readonly=%s", spec.DiskPath, ro))
+	}
+
+	if spec.InitramfsPath != "" {
+		initramfs := spec.InitramfsPath
+		if !filepath.IsAbs(initramfs) {
+			abs, err := filepath.Abs(initramfs)
+			if err != nil {
+				return nil, fmt.Errorf("resolve initramfs path: %w", err)
+			}
+			initramfs = abs
+		}
+		if _, err := os.Stat(initramfs); err != nil {
+			return nil, fmt.Errorf("initramfs path: %w", err)
+		}
+		args = append(args, "--initramfs", "path="+initramfs)
 	}
 
 	// Serial to file per-VM
