@@ -81,6 +81,30 @@ static void trim_trailing_whitespace(char *s) {
     }
 }
 
+
+static int wait_for_block_device(const char *path, int max_attempts, useconds_t delay_us) {
+    struct stat st;
+    for (int attempt = 0; attempt < max_attempts; attempt++) {
+        if (stat(path, &st) == 0) {
+            if (S_ISBLK(st.st_mode)) {
+                return 1;
+            }
+            fprintf(stderr, "C INIT: %s exists but is not a block device (mode=0%o)\n", path, st.st_mode);
+            return 0;
+        }
+
+        int err = errno;
+        if (err != ENOENT && err != ENODEV && err != ENXIO) {
+            fprintf(stderr, "C INIT: unexpected error probing %s: %s\n", path, strerror(err));
+        }
+
+        usleep(delay_us);
+    }
+
+    fprintf(stderr, "C INIT: root device %s did not appear after %d attempts\n", path, max_attempts);
+    return 0;
+}
+
 // Read custom init path from /.volant_init file (if present)
 // Returns the path to exec, or NULL for default kestrel
 static const char* read_custom_init(void) {
@@ -142,12 +166,19 @@ static int try_run_buildkit(void) {
     char root_fs[64];
     read_root_params(root_dev, sizeof(root_dev), root_fs, sizeof(root_fs));
 
+    printf("C INIT: root device=%s rootfstype=%s\n", root_dev, root_fs);
+    if (!wait_for_block_device(root_dev, 50, 100 * 1000)) {
+        return 0;
+    }
+
     mkdir("/newroot", 0755);
     if (mount(root_dev, "/newroot", root_fs, 0, NULL)) {
         fprintf(stderr, "C INIT: Failed to mount root device %s (%s): %s\n", root_dev, root_fs, strerror(errno));
         rmdir("/newroot");
         return 0;
     }
+
+    printf("C INIT: mounted root filesystem from %s (%s)\n", root_dev, root_fs);
 
     char init_path[4096] = {0};
     FILE *f = fopen("/newroot/.volant_init", "r");
@@ -158,16 +189,28 @@ static int try_run_buildkit(void) {
         fclose(f);
     }
 
-    if (init_path[0] == '\0') {
+    if (init_path[0] != '\0') {
+        printf("C INIT: disk /.volant_init requests %s\n", init_path);
+    } else {
         struct stat st;
-        if (stat("/newroot/.fledge/init", &st) == 0 && S_ISREG(st.st_mode) &&
-            (st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH))) {
-            strncpy(init_path, "/.fledge/init", sizeof(init_path) - 1);
-            init_path[sizeof(init_path) - 1] = '\0';
+        if (stat("/newroot/.fledge/init", &st) == 0) {
+            if (S_ISREG(st.st_mode) && (st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH))) {
+                strncpy(init_path, "/.fledge/init", sizeof(init_path) - 1);
+                init_path[sizeof(init_path) - 1] = '\0';
+                printf("C INIT: using /.fledge/init from disk\n");
+            } else {
+                fprintf(stderr, "C INIT: /.fledge/init exists but is not executable (mode=0%o)\n", st.st_mode);
+            }
+        } else {
+            int err = errno;
+            if (err != ENOENT) {
+                fprintf(stderr, "C INIT: Failed to stat /.fledge/init: %s\n", strerror(err));
+            }
         }
     }
 
     if (init_path[0] == '\0') {
+        printf("C INIT: disk provided no BuildKit init; falling back to kestrel\n");
         if (umount("/newroot")) {
             fprintf(stderr, "C INIT: Failed to unmount /newroot: %s\n", strerror(errno));
         }
