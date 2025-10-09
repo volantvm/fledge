@@ -138,6 +138,14 @@ func (e *Executor) Run(ctx context.Context, id string, root executor.Mount, moun
 		_, _ = io.Copy(process.Stderr, bytes.NewReader(stderrBuf))
 	}
 
+	if exitCode < 0 {
+		logging.Warn("microvm executor: guest exit code not captured", "vm", vmName)
+		if waitErr != nil {
+			return nil, fmt.Errorf("microvm executor: vm wait: %w", waitErr)
+		}
+		return nil, fmt.Errorf("microvm executor: guest exit code missing (see previous warnings)")
+	}
+
 	if waitErr != nil {
 		var exitErr *exec.ExitError
 		if errors.As(waitErr, &exitErr) && exitCode >= 0 {
@@ -267,9 +275,19 @@ func (e *Executor) collectResults(ctx context.Context, imagePath, rootDir string
 		ctrlDir := filepath.Join(mountPoint, ".fledge")
 		stdoutBuf, _ = os.ReadFile(filepath.Join(ctrlDir, "stdout"))
 		stderrBuf, _ = os.ReadFile(filepath.Join(ctrlDir, "stderr"))
-		if data, err := os.ReadFile(filepath.Join(ctrlDir, "exit_code")); err == nil {
-			if v, parseErr := strconv.Atoi(strings.TrimSpace(string(data))); parseErr == nil {
+		exitPath := filepath.Join(ctrlDir, "exit_code")
+		if data, err := os.ReadFile(exitPath); err == nil {
+			exitStr := strings.TrimSpace(string(data))
+			if exitStr == "" {
+				logging.Warn("microvm executor: exit code file empty", "path", exitPath)
+			} else if v, parseErr := strconv.Atoi(exitStr); parseErr != nil {
+				logging.Warn("microvm executor: parse exit code", "path", exitPath, "value", exitStr, "error", parseErr)
+			} else {
 				exitCode = v
+			}
+		} else {
+			if !errors.Is(err, os.ErrNotExist) {
+				logging.Warn("microvm executor: read exit code", "path", exitPath, "error", err)
 			}
 		}
 
