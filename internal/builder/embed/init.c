@@ -2,6 +2,7 @@
 // This init sets up the basic Linux environment and hands off to kestrel or custom entrypoint.
 #define _GNU_SOURCE
 #include <unistd.h>
+#include <ctype.h>
 #include <errno.h>
 #include <string.h>
 #include <stdio.h>
@@ -49,23 +50,35 @@ static void ensure_console(void) {
         close(fd);
 }
 
-// A more robust filesystem setup
-static void mount_filesystems(void) {
-    // Mount the essentials for the Go runtime and other tools
-    if (mount("proc", "/proc", "proc", 0, NULL))
-        panic("mount(/proc)");
-    if (mount("sysfs", "/sys", "sysfs", 0, NULL))
-        panic("mount(/sys)");
-    if (mount("devtmpfs", "/dev", "devtmpfs", 0, NULL))
+static void mount_devtmpfs(void) {
+    mkdir("/dev", 0755);
+    if (mount("devtmpfs", "/dev", "devtmpfs", 0, NULL) && errno != EBUSY)
         panic("mount(/dev)");
+}
 
-    // Create and mount tmpfs for runtime data
+static void mount_runtime_filesystems(void) {
+    mkdir("/proc", 0755);
+    if (mount("proc", "/proc", "proc", 0, NULL) && errno != EBUSY)
+        panic("mount(/proc)");
+    mkdir("/sys", 0755);
+    if (mount("sysfs", "/sys", "sysfs", 0, NULL) && errno != EBUSY)
+        panic("mount(/sys)");
+
     mkdir("/tmp", 0777);
-    if (mount("tmpfs", "/tmp", "tmpfs", 0, NULL))
+    if (mount("tmpfs", "/tmp", "tmpfs", 0, NULL) && errno != EBUSY)
         panic("mount(/tmp)");
     mkdir("/run", 0755);
-    if (mount("tmpfs", "/run", "tmpfs", 0, NULL))
+    if (mount("tmpfs", "/run", "tmpfs", 0, NULL) && errno != EBUSY)
         panic("mount(/run)");
+}
+
+static void trim_trailing_whitespace(char *s) {
+    if (!s)
+        return;
+    size_t len = strlen(s);
+    while (len > 0 && isspace((unsigned char)s[len - 1])) {
+        s[--len] = '\0';
+    }
 }
 
 // Read custom init path from /.volant_init file (if present)
@@ -81,19 +94,103 @@ static const char* read_custom_init(void) {
         fclose(f);
         return NULL;
     }
-
-    // Strip newline
-    size_t len = strlen(path_buf);
-    if (len > 0 && path_buf[len-1] == '\n')
-        path_buf[len-1] = '\0';
-    
     fclose(f);
-    
-    // Skip if empty
+
+    trim_trailing_whitespace(path_buf);
+
     if (path_buf[0] == '\0')
         return NULL;
 
     return path_buf;
+}
+
+static void read_root_params(char *root_dev, size_t root_dev_len, char *root_fs, size_t root_fs_len) {
+    if (root_dev && root_dev_len > 0) {
+        strncpy(root_dev, "/dev/vda", root_dev_len - 1);
+        root_dev[root_dev_len - 1] = '\0';
+    }
+    if (root_fs && root_fs_len > 0) {
+        strncpy(root_fs, "ext4", root_fs_len - 1);
+        root_fs[root_fs_len - 1] = '\0';
+    }
+
+    FILE *f = fopen("/proc/cmdline", "r");
+    if (!f)
+        return;
+
+    char line[4096];
+    if (!fgets(line, sizeof(line), f)) {
+        fclose(f);
+        return;
+    }
+    fclose(f);
+
+    char *saveptr = NULL;
+    for (char *token = strtok_r(line, " \n", &saveptr); token; token = strtok_r(NULL, " \n", &saveptr)) {
+        if (strncmp(token, "root=", 5) == 0 && root_dev && root_dev_len > 0) {
+            strncpy(root_dev, token + 5, root_dev_len - 1);
+            root_dev[root_dev_len - 1] = '\0';
+        } else if (strncmp(token, "rootfstype=", 11) == 0 && root_fs && root_fs_len > 0) {
+            strncpy(root_fs, token + 11, root_fs_len - 1);
+            root_fs[root_fs_len - 1] = '\0';
+        }
+    }
+}
+
+static int try_run_buildkit(void) {
+    char root_dev[256];
+    char root_fs[64];
+    read_root_params(root_dev, sizeof(root_dev), root_fs, sizeof(root_fs));
+
+    mkdir("/newroot", 0755);
+    if (mount(root_dev, "/newroot", root_fs, 0, NULL)) {
+        fprintf(stderr, "C INIT: Failed to mount root device %s (%s): %s\n", root_dev, root_fs, strerror(errno));
+        rmdir("/newroot");
+        return 0;
+    }
+
+    char init_path[4096] = {0};
+    FILE *f = fopen("/newroot/.volant_init", "r");
+    if (f) {
+        if (fgets(init_path, sizeof(init_path), f)) {
+            trim_trailing_whitespace(init_path);
+        }
+        fclose(f);
+    }
+
+    if (init_path[0] == '\0') {
+        struct stat st;
+        if (stat("/newroot/.fledge/init", &st) == 0 && S_ISREG(st.st_mode) &&
+            (st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH))) {
+            strncpy(init_path, "/.fledge/init", sizeof(init_path) - 1);
+            init_path[sizeof(init_path) - 1] = '\0';
+        }
+    }
+
+    if (init_path[0] == '\0') {
+        if (umount("/newroot")) {
+            fprintf(stderr, "C INIT: Failed to unmount /newroot: %s\n", strerror(errno));
+        }
+        rmdir("/newroot");
+        return 0;
+    }
+
+    if (chdir("/newroot"))
+        panic("chdir(/newroot)");
+    if (chroot("."))
+        panic("chroot(.)");
+    if (chdir("/"))
+        panic("chdir(/)");
+
+    mount_devtmpfs();
+    mount_runtime_filesystems();
+
+    printf("C INIT: Handing off to custom init: %s\n", init_path);
+    char *const custom_argv[] = {init_path, NULL};
+    execv(init_path, custom_argv);
+    fprintf(stderr, "C INIT: Failed to exec custom init %s: %s\n", init_path, strerror(errno));
+    panic("execv(custom init)");
+    return 1; // Unreachable
 }
 
 int main(int argc, char *argv[]) {
@@ -107,33 +204,28 @@ int main(int argc, char *argv[]) {
     mkdir("/usr/local", 0755);
     mkdir("/usr/local/bin", 0755);
 
-    // Set up the essential filesystems
-    mount_filesystems();
-
-    // Now that /dev is mounted, ensure we have a console
+    mount_devtmpfs();
     ensure_console();
 
-    printf("C INIT: Basic environment ready (/proc /sys /dev /tmp /run mounted)\n");
+    if (try_run_buildkit()) {
+        return 1; // Unreachable when exec succeeds
+    }
 
-    // Check if custom init path is specified
     const char *custom_init = read_custom_init();
-    
     if (custom_init) {
+        mount_runtime_filesystems();
         printf("C INIT: Handing off to custom init: %s\n", custom_init);
         char *const custom_argv[] = {(char*)custom_init, NULL};
         execv(custom_init, custom_argv);
-        // If we reach here, exec failed
         fprintf(stderr, "C INIT: Failed to exec custom init %s: %s\n", custom_init, strerror(errno));
         panic("execv(custom init)");
     }
 
-    // Default behavior: hand off to kestrel
+    mount_runtime_filesystems();
     printf("C INIT: Handing off to Kestrel agent...\n");
     char *const kestrel_argv[] = {"/bin/kestrel", NULL};
     execv("/bin/kestrel", kestrel_argv);
 
-    // If execv returns, it failed. This is a catastrophe.
     panic("execv(/bin/kestrel)");
-
     return 1; // Unreachable
 }
