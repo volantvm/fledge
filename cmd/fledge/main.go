@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/volantvm/fledge/internal/builder"
+	_ "github.com/volantvm/fledge/internal/buildkit"
 	"github.com/volantvm/fledge/internal/config"
 	"github.com/volantvm/fledge/internal/logging"
 	"github.com/volantvm/fledge/internal/server"
