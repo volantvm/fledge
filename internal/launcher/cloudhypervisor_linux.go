@@ -15,13 +15,13 @@ import (
 
 // LaunchSpec describes a minimal VM configuration for Cloud Hypervisor.
 type LaunchSpec struct {
-	Name         string
-	CPUCores     int
-	MemoryMB     int
-	KernelArgs   string // appended to default cmdline
-	KernelPath   string // optional override; if empty, defaults from Launcher
-	DiskPath     string // path to rootfs image (virtio-blk)
-	ReadOnlyRoot bool
+	Name          string
+	CPUCores      int
+	MemoryMB      int
+	KernelArgs    string // appended to default cmdline
+	KernelPath    string // optional override; if empty, defaults from Launcher
+	DiskPath      string // path to rootfs image (virtio-blk)
+	ReadOnlyRoot  bool
 	InitramfsPath string // optional initramfs archive supplied via --initramfs
 }
 
@@ -160,10 +160,14 @@ func (l *Launcher) Launch(ctx context.Context, spec LaunchSpec) (Instance, error
 			}
 			initramfs = abs
 		}
-		if _, err := os.Stat(initramfs); err != nil {
+		fi, err := os.Stat(initramfs)
+		if err != nil {
 			return nil, fmt.Errorf("initramfs path: %w", err)
 		}
-		args = append(args, "--initramfs", "path="+initramfs)
+		if fi.IsDir() {
+			return nil, fmt.Errorf("initramfs path: is a directory")
+		}
+		args = append(args, "--initramfs", initramfs)
 	}
 
 	// Serial to file per-VM
