@@ -114,6 +114,7 @@ func (e *Executor) Run(ctx context.Context, id string, root executor.Mount, moun
 		DiskPath:      imagePath,
 		ReadOnlyRoot:  false,
 		InitramfsPath: initramfsPath,
+		UseSlirp:      true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("microvm executor: launch vm: %w", err)
