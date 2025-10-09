@@ -411,8 +411,14 @@ func (e *Executor) installSupportBinaries(ctx context.Context, mountPoint, contr
 		return fmt.Errorf("microvm executor: stage busybox: %w", err)
 	}
 
-	if err := ensureSymlink(filepath.Join(binDir, "sh"), "busybox"); err != nil {
-		return fmt.Errorf("microvm executor: link busybox shell: %w", err)
+	for _, applet := range []string{"sh", "ip", "udhcpc"} {
+		if err := ensureSymlink(filepath.Join(binDir, applet), "busybox"); err != nil {
+			return fmt.Errorf("microvm executor: link busybox %s: %w", applet, err)
+		}
+	}
+	udhcpcScript := filepath.Join(binDir, "udhcpc-script")
+	if err := os.WriteFile(udhcpcScript, []byte(buildUDHCPCScript()), 0o755); err != nil {
+		return fmt.Errorf("microvm executor: write udhcpc script: %w", err)
 	}
 
 	rootShell := filepath.Join(mountPoint, "bin", "sh")
@@ -844,10 +850,18 @@ func buildInitScript(process executor.ProcessInfo) string {
 	buf.WriteString("set -eu\n")
 	buf.WriteString("PATH=/.fledge/bin:$PATH\n")
 	buf.WriteString("export PATH\n")
+	buf.WriteString("export DEBIAN_FRONTEND=${DEBIAN_FRONTEND:-noninteractive}\n")
 	buf.WriteString("mkdir -p /.fledge\n")
 	buf.WriteString("mount -t proc proc /proc 2>/dev/null || true\n")
 	buf.WriteString("mount -t sysfs sysfs /sys 2>/dev/null || true\n")
 	buf.WriteString("mount -t tmpfs tmpfs /run 2>/dev/null || true\n")
+	buf.WriteString("/.fledge/bin/busybox ip link set lo up 2>/dev/null || true\n")
+	buf.WriteString("for iface in eth0 ens3 enp0s1 tap0; do\n")
+	buf.WriteString("\tif /.fledge/bin/busybox ip link show \"$iface\" >/dev/null 2>&1; then\n")
+	buf.WriteString("\t\t/.fledge/bin/busybox ip link set \"$iface\" up >/dev/null 2>&1 || true\n")
+	buf.WriteString("\t\t/.fledge/bin/busybox udhcpc -i \"$iface\" -n -q -s /.fledge/bin/udhcpc-script >/dev/null 2>&1 && break\n")
+	buf.WriteString("\tfi\n")
+	buf.WriteString("done\n")
 	buf.WriteString("exec > /.fledge/stdout\n")
 	buf.WriteString("exec 2> /.fledge/stderr\n")
 	buf.WriteString("export HOME=${HOME:-/root}\n")
@@ -939,4 +953,45 @@ func sanitizeName(name string) string {
 		return "run"
 	}
 	return buf.String()
+}
+
+func buildUDHCPCScript() string {
+	script := `
+#!/.fledge/bin/busybox sh
+set -eu
+
+case "$1" in
+deconfig)
+	/.fledge/bin/busybox ip addr flush dev "$interface" >/dev/null 2>&1 || true
+	/.fledge/bin/busybox ip link set "$interface" down >/dev/null 2>&1 || true
+	;;
+bound|renew)
+	/.fledge/bin/busybox ip addr flush dev "$interface" >/dev/null 2>&1 || true
+	if [ -n "${subnet:-}" ]; then
+		/.fledge/bin/busybox ifconfig "$interface" "$ip" netmask "$subnet" up
+	else
+		/.fledge/bin/busybox ifconfig "$interface" "$ip" up
+	fi
+	/.fledge/bin/busybox ip route flush dev "$interface" >/dev/null 2>&1 || true
+	if [ -n "${router:-}" ]; then
+		/.fledge/bin/busybox ip route add default via "$router" dev "$interface" >/dev/null 2>&1 || true
+	fi
+	> /.fledge/resolv.conf
+	if [ -n "${dns:-}" ]; then
+		for server in $dns; do
+			printf "nameserver %s\n" "$server" >> /.fledge/resolv.conf
+		done
+	fi
+	mkdir -p /etc
+	if [ -s /.fledge/resolv.conf ]; then
+		cp /.fledge/resolv.conf /etc/resolv.conf
+	fi
+	;;
+*)
+	;;
+esac
+
+exit 0
+`
+	return strings.TrimPrefix(script, "\n")
 }
