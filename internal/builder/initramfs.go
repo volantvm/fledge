@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/volantvm/fledge/internal/buildkit"
 	"github.com/volantvm/fledge/internal/config"
 	"github.com/volantvm/fledge/internal/logging"
 	"github.com/volantvm/fledge/internal/utils"
@@ -292,8 +291,7 @@ func (b *InitramfsBuilder) overlayDockerRootfsIfProvided() error {
 		defer os.RemoveAll(exportDir)
 
 		logging.Info("Building Dockerfile via BuildKit for initramfs overlay", "dockerfile", dfPath, "context", ctxDir)
-		err = buildkit.BuildDockerfileToRootfs(context.Background(), buildkit.DockerfileBuildOptions{
-			Address:    buildkit.DefaultAddress(),
+		err = invokeDockerfileBuilder(context.Background(), DockerfileBuildInput{
 			Dockerfile: dfPath,
 			ContextDir: ctxDir,
 			Target:     b.Config.Source.Target,
