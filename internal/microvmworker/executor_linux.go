@@ -319,6 +319,11 @@ func (e *Executor) writeInitFiles(ctx context.Context, mountPoint string, proces
 		return fmt.Errorf("write init script: %w", err)
 	}
 
+	volantInit := filepath.Join(mountPoint, ".volant_init")
+	if err := os.WriteFile(volantInit, []byte("/.fledge/init\n"), 0o644); err != nil {
+		return fmt.Errorf("write .volant_init: %w", err)
+	}
+
 	for _, name := range []string{"stdout", "stderr"} {
 		path := filepath.Join(controlDir, name)
 		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
