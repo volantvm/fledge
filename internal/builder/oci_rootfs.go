@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/schollz/progressbar/v3"
-	"github.com/volantvm/fledge/internal/buildkit"
 	"github.com/volantvm/fledge/internal/config"
 	"github.com/volantvm/fledge/internal/logging"
 )
@@ -724,8 +723,7 @@ func (b *OCIRootfsBuilder) buildDockerfileIfNeeded() error {
 	}
 
 	logging.Info("Building Dockerfile via BuildKit", "dockerfile", dfPath, "context", ctxDir, "dest", destRootfs)
-	if err := buildkit.BuildDockerfileToRootfs(context.Background(), buildkit.DockerfileBuildOptions{
-		Address:    buildkit.DefaultAddress(),
+	if err := invokeDockerfileBuilder(context.Background(), DockerfileBuildInput{
 		Dockerfile: dfPath,
 		ContextDir: ctxDir,
 		Target:     b.Config.Source.Target,

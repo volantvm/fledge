@@ -3,6 +3,7 @@ package buildkit
 import (
 	"context"
 	"fmt"
+	"github.com/volantvm/fledge/internal/builder"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,6 +93,18 @@ func BuildDockerfileToRootfs(ctx context.Context, opts DockerfileBuildOptions) e
 		return fmt.Errorf("buildkit solve failed: %w", err)
 	}
 	return nil
+}
+
+func init() {
+	builder.RegisterDockerfileBuilder(func(ctx context.Context, input builder.DockerfileBuildInput) error {
+		return BuildDockerfileToRootfs(ctx, DockerfileBuildOptions{
+			Dockerfile: input.Dockerfile,
+			ContextDir: input.ContextDir,
+			Target:     input.Target,
+			BuildArgs:  input.BuildArgs,
+			DestDir:    input.DestDir,
+		})
+	})
 }
 
 // Compose minimal schema (subset) for build configuration
