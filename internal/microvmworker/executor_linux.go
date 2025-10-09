@@ -14,22 +14,30 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/containerd/containerd/mount"
 	"github.com/moby/buildkit/executor"
 	resourcestypes "github.com/moby/buildkit/executor/resources/types"
 	gatewayapi "github.com/moby/buildkit/frontend/gateway/pb"
+	"github.com/volantvm/fledge/internal/config"
 	ch "github.com/volantvm/fledge/internal/launcher"
 	"github.com/volantvm/fledge/internal/logging"
+	"github.com/volantvm/fledge/internal/utils"
 )
 
 // Executor runs BuildKit exec steps inside Cloud Hypervisor microVMs.
 type Executor struct {
 	worker     *Worker
 	workspace  string
-	tempMu     sync.Mutex
-	nextVMID   int
+	supportDir string
+
+	tempMu      sync.Mutex
+	nextVMID    int
+	busyboxMu   sync.Mutex
+	busyboxPath string
+
 	baseKernel string
 }
 
@@ -43,9 +51,15 @@ func NewExecutor(w *Worker) (*Executor, error) {
 		return nil, fmt.Errorf("microvm executor: prepare workspace: %w", err)
 	}
 
+	supportDir := filepath.Join(workspace, "support")
+	if err := os.MkdirAll(supportDir, 0o755); err != nil {
+		return nil, fmt.Errorf("microvm executor: prepare support dir: %w", err)
+	}
+
 	return &Executor{
 		worker:     w,
 		workspace:  workspace,
+		supportDir: supportDir,
 		baseKernel: "init=/.fledge/init reboot=k",
 	}, nil
 }
@@ -180,25 +194,26 @@ func (e *Executor) applyAdditionalMounts(ctx context.Context, rootDir string, mo
 }
 
 func (e *Executor) prepareDiskImage(ctx context.Context, rootDir string) (string, error) {
-	size, err := dirSize(rootDir)
+	usage, err := dirSize(rootDir)
 	if err != nil {
 		return "", fmt.Errorf("microvm executor: size rootfs: %w", err)
 	}
-
-	extra := int64(256 << 20) // 256MB buffer
-	if size < 1<<30 {
-		extra = int64(128 << 20)
-	}
-	if size < 512<<20 {
-		extra = int64(64 << 20)
-	}
-	if size < 128<<20 {
-		extra = int64(32 << 20)
+	if usage <= 0 {
+		usage = 1 << 20
 	}
 
-	total := size + extra
-	if total < 64<<20 {
-		total = 64 << 20
+	overhead := usage / 2
+	if overhead < 512<<20 {
+		overhead = 512 << 20
+	}
+
+	total := usage + overhead
+	if total < 512<<20 {
+		total = 512 << 20
+	}
+	const align = 64 << 20
+	if rem := total % align; rem != 0 {
+		total += align - rem
 	}
 
 	imagePath := filepath.Join(e.workspace, fmt.Sprintf("disk-%d.img", time.Now().UnixNano()))
@@ -212,7 +227,7 @@ func (e *Executor) prepareDiskImage(ctx context.Context, rootDir string) (string
 	}
 	file.Close()
 
-	cmd := exec.CommandContext(ctx, "mkfs.ext4", "-F", imagePath)
+	cmd := exec.CommandContext(ctx, "mkfs.ext4", "-F", "-m", "0", "-E", "lazy_itable_init=0,lazy_journal_init=0", imagePath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("microvm executor: mkfs.ext4: %w output=%s", err, string(output))
 	}
@@ -221,14 +236,6 @@ func (e *Executor) prepareDiskImage(ctx context.Context, rootDir string) (string
 }
 
 func (e *Executor) populateDisk(ctx context.Context, imagePath, rootDir string, process executor.ProcessInfo) error {
-	shellPath := filepath.Join(rootDir, "bin", "sh")
-	if _, err := os.Stat(shellPath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("microvm executor: rootfs missing /bin/sh; ensure the base image provides a POSIX shell")
-		}
-		return fmt.Errorf("microvm executor: stat shell: %w", err)
-	}
-
 	return e.withDiskMount(ctx, imagePath, func(mountPoint string) error {
 		if err := clearDir(mountPoint); err != nil {
 			return fmt.Errorf("clear mount: %w", err)
@@ -236,7 +243,7 @@ func (e *Executor) populateDisk(ctx context.Context, imagePath, rootDir string, 
 		if err := copyTree(rootDir, mountPoint); err != nil {
 			return fmt.Errorf("copy rootfs: %w", err)
 		}
-		return e.writeInitFiles(mountPoint, process)
+		return e.writeInitFiles(ctx, mountPoint, process)
 	})
 }
 
@@ -295,9 +302,13 @@ func (e *Executor) withDiskMount(ctx context.Context, imagePath string, fn func(
 	return fn(mountPoint)
 }
 
-func (e *Executor) writeInitFiles(mountPoint string, process executor.ProcessInfo) error {
+func (e *Executor) writeInitFiles(ctx context.Context, mountPoint string, process executor.ProcessInfo) error {
 	controlDir := filepath.Join(mountPoint, ".fledge")
 	if err := os.MkdirAll(controlDir, 0o755); err != nil {
+		return err
+	}
+
+	if err := e.installSupportBinaries(ctx, mountPoint, controlDir); err != nil {
 		return err
 	}
 
@@ -317,6 +328,121 @@ func (e *Executor) writeInitFiles(mountPoint string, process executor.ProcessInf
 	}
 
 	return nil
+}
+
+func (e *Executor) installSupportBinaries(ctx context.Context, mountPoint, controlDir string) error {
+	binDir := filepath.Join(controlDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		return fmt.Errorf("microvm executor: create support bin dir: %w", err)
+	}
+
+	busyboxHostPath, err := e.ensureBusybox(ctx)
+	if err != nil {
+		return err
+	}
+
+	busyboxTarget := filepath.Join(binDir, "busybox")
+	if err := copyFile(busyboxHostPath, busyboxTarget, 0o755); err != nil {
+		return fmt.Errorf("microvm executor: stage busybox: %w", err)
+	}
+
+	if err := ensureSymlink(filepath.Join(binDir, "sh"), "busybox"); err != nil {
+		return fmt.Errorf("microvm executor: link busybox shell: %w", err)
+	}
+
+	rootShell := filepath.Join(mountPoint, "bin", "sh")
+	if info, err := os.Stat(rootShell); err == nil {
+		if info.Mode()&0o111 == 0 {
+			logging.Warn("microvm executor: /bin/sh exists but is not executable", "path", rootShell)
+		}
+	} else if errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(filepath.Dir(rootShell), 0o755); err != nil {
+			return fmt.Errorf("microvm executor: create /bin directory: %w", err)
+		}
+		if err := os.Symlink("/.fledge/bin/busybox", rootShell); err != nil && !errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("microvm executor: link /bin/sh: %w", err)
+		}
+	} else {
+		return fmt.Errorf("microvm executor: stat /bin/sh: %w", err)
+	}
+
+	return nil
+}
+
+func (e *Executor) ensureBusybox(ctx context.Context) (string, error) {
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	default:
+	}
+
+	e.busyboxMu.Lock()
+	defer e.busyboxMu.Unlock()
+
+	if e.busyboxPath != "" {
+		if _, err := os.Stat(e.busyboxPath); err == nil {
+			return e.busyboxPath, nil
+		}
+		logging.Warn("microvm executor: cached busybox unavailable", "path", e.busyboxPath)
+		e.busyboxPath = ""
+	}
+
+	target := filepath.Join(e.supportDir, "busybox")
+	if _, err := os.Stat(target); err == nil {
+		if err := utils.VerifyChecksum(target, config.DefaultBusyboxSHA256); err != nil {
+			logging.Warn("microvm executor: busybox checksum mismatch, re-downloading", "error", err)
+			_ = os.Remove(target)
+		} else {
+			if err := os.Chmod(target, 0o755); err != nil {
+				return "", fmt.Errorf("microvm executor: chmod busybox: %w", err)
+			}
+			e.busyboxPath = target
+			return target, nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("microvm executor: stat busybox: %w", err)
+	}
+
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	default:
+	}
+
+	logging.Info("microvm executor: downloading support busybox", "url", config.DefaultBusyboxURL)
+	tmpPath, err := utils.DownloadToTempFile(config.DefaultBusyboxURL, false)
+	if err != nil {
+		return "", fmt.Errorf("microvm executor: download busybox: %w", err)
+	}
+	defer os.Remove(tmpPath)
+
+	if err := utils.VerifyChecksum(tmpPath, config.DefaultBusyboxSHA256); err != nil {
+		return "", fmt.Errorf("microvm executor: verify busybox: %w", err)
+	}
+
+	if err := copyFile(tmpPath, target, 0o755); err != nil {
+		return "", fmt.Errorf("microvm executor: install busybox: %w", err)
+	}
+
+	e.busyboxPath = target
+	return target, nil
+}
+
+func ensureSymlink(path, target string) error {
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			if current, err := os.Readlink(path); err == nil && current == target {
+				return nil
+			}
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	return os.Symlink(target, path)
 }
 
 func attachLoop(imagePath string) (string, error) {
@@ -478,6 +604,10 @@ func dirSize(path string) (int64, error) {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return nil
 		}
+		if stat, ok := info.Sys().(*syscall.Stat_t); ok && stat != nil {
+			size += stat.Blocks * 512
+			return nil
+		}
 		size += info.Size()
 		return nil
 	})
@@ -486,8 +616,10 @@ func dirSize(path string) (int64, error) {
 
 func buildInitScript(process executor.ProcessInfo) string {
 	var buf strings.Builder
-	buf.WriteString("#!/bin/sh\n")
+	buf.WriteString("#!/.fledge/bin/busybox sh\n")
 	buf.WriteString("set -eu\n")
+	buf.WriteString("PATH=/.fledge/bin:$PATH\n")
+	buf.WriteString("export PATH\n")
 	buf.WriteString("mkdir -p /.fledge\n")
 	buf.WriteString("mount -t proc proc /proc 2>/dev/null || true\n")
 	buf.WriteString("mount -t sysfs sysfs /sys 2>/dev/null || true\n")
@@ -523,6 +655,15 @@ func buildInitScript(process executor.ProcessInfo) string {
 		buf.WriteString(shellQuote(arg))
 	}
 	buf.WriteString("\n")
+	buf.WriteString("if [ \"$#\" -ge 1 ]; then\n")
+	buf.WriteString("case \"$1\" in\n")
+	buf.WriteString("/bin/sh|sh)\n")
+	buf.WriteString("if [ ! -x \"$1\" ]; then\n")
+	buf.WriteString("set -- /.fledge/bin/busybox sh \"${@:2}\"\n")
+	buf.WriteString("fi\n")
+	buf.WriteString(";;\n")
+	buf.WriteString("esac\n")
+	buf.WriteString("fi\n")
 	buf.WriteString("\"$@\"\n")
 	buf.WriteString("status=$?\n")
 	buf.WriteString("set -e\n")
