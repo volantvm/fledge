@@ -4,7 +4,9 @@ package launcher
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +25,8 @@ type LaunchSpec struct {
 	DiskPath      string // path to rootfs image (virtio-blk)
 	ReadOnlyRoot  bool
 	InitramfsPath string // optional initramfs archive supplied via --initramfs
+	UseSlirp      bool   // enable Cloud Hypervisor slirp networking
+	SlirpMAC      string // optional MAC address for slirp networking
 }
 
 // Instance represents a running VM process.
@@ -170,6 +174,22 @@ func (l *Launcher) Launch(ctx context.Context, spec LaunchSpec) (Instance, error
 		args = append(args, "--initramfs", initramfs)
 	}
 
+	if spec.UseSlirp {
+		mac := spec.SlirpMAC
+		if mac == "" {
+			var err error
+			mac, err = generateLocalMAC()
+			if err != nil {
+				return nil, fmt.Errorf("slirp mac: %w", err)
+			}
+		} else {
+			if _, err := net.ParseMAC(mac); err != nil {
+				return nil, fmt.Errorf("slirp mac: %w", err)
+			}
+		}
+		args = append(args, "--net", fmt.Sprintf("tap=,mac=%s", mac))
+	}
+
 	// Serial to file per-VM
 	if spec.Name == "" {
 		spec.Name = "vm"
@@ -184,4 +204,13 @@ func (l *Launcher) Launch(ctx context.Context, spec LaunchSpec) (Instance, error
 		return nil, fmt.Errorf("launch cloud-hypervisor: %w", err)
 	}
 	return &chInstance{name: spec.Name, cmd: cmd}, nil
+}
+
+func generateLocalMAC() (string, error) {
+	var buf [6]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", err
+	}
+	buf[0] = (buf[0] | 0x02) & 0xFE
+	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]), nil
 }
