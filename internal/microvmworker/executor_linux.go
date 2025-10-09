@@ -5,6 +5,7 @@ package microvmworker
 import (
 	"bytes"
 	"context"
+	"debug/elf"
 	"errors"
 	"fmt"
 	"io"
@@ -379,25 +380,45 @@ func (e *Executor) ensureBusybox(ctx context.Context) (string, error) {
 	e.busyboxMu.Lock()
 	defer e.busyboxMu.Unlock()
 
-	if e.busyboxPath != "" {
-		if _, err := os.Stat(e.busyboxPath); err == nil {
-			return e.busyboxPath, nil
+	target := filepath.Join(e.supportDir, "busybox")
+
+	localPath, err := locateLocalBusybox()
+	if err != nil {
+		return "", fmt.Errorf("microvm executor: locate local busybox: %w", err)
+	}
+	if localPath != "" {
+		logging.Info("microvm executor: staging busybox from host", "path", localPath)
+		if err := copyFile(localPath, target, 0o755); err != nil {
+			return "", fmt.Errorf("microvm executor: stage busybox from host: %w", err)
 		}
-		logging.Warn("microvm executor: cached busybox unavailable", "path", e.busyboxPath)
-		e.busyboxPath = ""
+		if err := os.Chmod(target, 0o755); err != nil {
+			return "", fmt.Errorf("microvm executor: chmod busybox: %w", err)
+		}
+		e.busyboxPath = target
+		return target, nil
 	}
 
-	target := filepath.Join(e.supportDir, "busybox")
 	if _, err := os.Stat(target); err == nil {
-		if err := utils.VerifyChecksum(target, config.DefaultBusyboxSHA256); err != nil {
-			logging.Warn("microvm executor: busybox checksum mismatch, re-downloading", "error", err)
-			_ = os.Remove(target)
-		} else {
+		if verifyErr := utils.VerifyChecksum(target, config.DefaultBusyboxSHA256); verifyErr == nil {
 			if err := os.Chmod(target, 0o755); err != nil {
 				return "", fmt.Errorf("microvm executor: chmod busybox: %w", err)
 			}
 			e.busyboxPath = target
 			return target, nil
+		} else {
+			validationErr := validateBusyboxBinary(target)
+			if validationErr == nil {
+				if err := os.Chmod(target, 0o755); err != nil {
+					return "", fmt.Errorf("microvm executor: chmod busybox: %w", err)
+				}
+				e.busyboxPath = target
+				return target, nil
+			}
+
+			logging.Warn("microvm executor: cached busybox invalid; removing", "path", target, "checksum_error", verifyErr, "validation_error", validationErr)
+			if removeErr := os.Remove(target); removeErr != nil {
+				return "", fmt.Errorf("microvm executor: remove invalid busybox: %w", removeErr)
+			}
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", fmt.Errorf("microvm executor: stat busybox: %w", err)
@@ -412,7 +433,7 @@ func (e *Executor) ensureBusybox(ctx context.Context) (string, error) {
 	logging.Info("microvm executor: downloading support busybox", "url", config.DefaultBusyboxURL)
 	tmpPath, err := utils.DownloadToTempFile(config.DefaultBusyboxURL, false)
 	if err != nil {
-		return "", fmt.Errorf("microvm executor: download busybox: %w", err)
+		return "", fmt.Errorf("microvm executor: download busybox: %w (install busybox-static and ensure busybox is available locally for offline use)", err)
 	}
 	defer os.Remove(tmpPath)
 
@@ -426,6 +447,72 @@ func (e *Executor) ensureBusybox(ctx context.Context) (string, error) {
 
 	e.busyboxPath = target
 	return target, nil
+}
+
+func locateLocalBusybox() (string, error) {
+	candidates := []string{}
+	if envPath := strings.TrimSpace(os.Getenv("FLEDGE_BUSYBOX_PATH")); envPath != "" {
+		candidates = append(candidates, envPath)
+	}
+	candidates = append(candidates,
+		"/usr/bin/busybox",
+		"/bin/busybox",
+	)
+	if path, err := exec.LookPath("busybox"); err == nil {
+		candidates = append(candidates, path)
+	}
+
+	seen := make(map[string]struct{})
+	for _, candidate := range candidates {
+		candidate = filepath.Clean(candidate)
+		if candidate == "" {
+			continue
+		}
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+
+		info, err := os.Stat(candidate)
+		if err != nil {
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		if info.Mode()&0o111 == 0 {
+			logging.Warn("microvm executor: host busybox missing execute bit", "path", candidate)
+			continue
+		}
+		if err := validateBusyboxBinary(candidate); err != nil {
+			logging.Warn("microvm executor: incompatible host busybox", "path", candidate, "error", err)
+			continue
+		}
+		return candidate, nil
+	}
+
+	return "", nil
+}
+
+func validateBusyboxBinary(path string) error {
+	f, err := elf.Open(path)
+	if err != nil {
+		return fmt.Errorf("open ELF: %w", err)
+	}
+	defer f.Close()
+
+	if f.FileHeader.Class != elf.ELFCLASS64 {
+		return fmt.Errorf("expected 64-bit ELF, got %s", f.FileHeader.Class)
+	}
+	if f.FileHeader.Machine != elf.EM_X86_64 {
+		return fmt.Errorf("expected x86_64 BusyBox binary, got %s", f.FileHeader.Machine)
+	}
+	for _, prog := range f.Progs {
+		if prog.Type == elf.PT_INTERP {
+			return fmt.Errorf("busybox binary is dynamically linked")
+		}
+	}
+	return nil
 }
 
 func ensureSymlink(path, target string) error {
