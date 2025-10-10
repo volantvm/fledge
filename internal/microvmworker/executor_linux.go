@@ -106,7 +106,13 @@ func (e *Executor) Run(ctx context.Context, id string, root executor.Mount, moun
 	}
 	defer initramfsCleanup()
 
-	inst, err := e.worker.BootVM(ctx, vmName, ch.LaunchSpec{
+	tapName, tapMAC, tapCleanup, err := e.prepareTapDevice(ctx, vmName)
+	if err != nil {
+		return nil, err
+	}
+	defer tapCleanup()
+
+	spec := ch.LaunchSpec{
 		Name:          vmName,
 		CPUCores:      2,
 		MemoryMB:      1536,
@@ -114,8 +120,11 @@ func (e *Executor) Run(ctx context.Context, id string, root executor.Mount, moun
 		DiskPath:      imagePath,
 		ReadOnlyRoot:  false,
 		InitramfsPath: initramfsPath,
-		UseSlirp:      true,
-	})
+		TapDevice:     tapName,
+		MACAddress:    tapMAC,
+	}
+
+	inst, err := e.worker.BootVM(ctx, vmName, spec)
 	if err != nil {
 		return nil, fmt.Errorf("microvm executor: launch vm: %w", err)
 	}
@@ -1065,6 +1074,111 @@ func sanitizeName(name string) string {
 		return "run"
 	}
 	return buf.String()
+}
+
+func (e *Executor) prepareTapDevice(ctx context.Context, vmName string) (string, string, func(), error) {
+	ipPath, err := exec.LookPath("ip")
+	if err != nil {
+		return "", "", func() {}, fmt.Errorf("microvm executor: ip command not found: %w", err)
+	}
+
+	bridge, err := determineHostBridge()
+	if err != nil {
+		return "", "", func() {}, err
+	}
+
+	mac, err := ch.RandomMAC()
+	if err != nil {
+		return "", "", func() {}, fmt.Errorf("microvm executor: generate mac: %w", err)
+	}
+
+	tapName := generateTapName(vmName)
+	createCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := runIP(createCtx, ipPath, "link", "add", "name", tapName, "type", "tap"); err != nil {
+		return "", "", func() {}, fmt.Errorf("microvm executor: create tap %s: %w", tapName, err)
+	}
+
+	cleanup := func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := runIP(cleanupCtx, ipPath, "link", "set", "dev", tapName, "nomaster"); err != nil {
+			if !errors.Is(err, context.DeadlineExceeded) {
+				logging.Warn("microvm executor: detach tap", "tap", tapName, "error", err)
+			}
+		}
+		if err := runIP(cleanupCtx, ipPath, "link", "del", tapName); err != nil {
+			if !errors.Is(err, context.DeadlineExceeded) {
+				logging.Warn("microvm executor: remove tap", "tap", tapName, "error", err)
+			}
+		}
+	}
+
+	if err := runIP(createCtx, ipPath, "link", "set", "dev", bridge, "up"); err != nil {
+		cleanup()
+		return "", "", func() {}, fmt.Errorf("microvm executor: set bridge up (%s): %w", bridge, err)
+	}
+	if err := runIP(createCtx, ipPath, "link", "set", "dev", tapName, "up"); err != nil {
+		cleanup()
+		return "", "", func() {}, fmt.Errorf("microvm executor: bring tap up (%s): %w", tapName, err)
+	}
+	if err := runIP(createCtx, ipPath, "link", "set", "dev", tapName, "master", bridge); err != nil {
+		cleanup()
+		return "", "", func() {}, fmt.Errorf("microvm executor: attach tap %s to bridge %s: %w", tapName, bridge, err)
+	}
+
+	logging.Info("microvm executor: attached tap to bridge", "tap", tapName, "bridge", bridge, "mac", mac)
+
+	return tapName, mac, cleanup, nil
+}
+
+func determineHostBridge() (string, error) {
+	bridge := strings.TrimSpace(os.Getenv("FLEDGE_HOST_BRIDGE"))
+	if bridge != "" {
+		if interfaceExists(bridge) {
+			return bridge, nil
+		}
+		return "", fmt.Errorf("microvm executor: configured bridge %s not found (set FLEDGE_HOST_BRIDGE)", bridge)
+	}
+
+	candidates := []string{"vbr0", "virbr0", "br0"}
+	for _, candidate := range candidates {
+		if interfaceExists(candidate) {
+			return candidate, nil
+		}
+	}
+
+	return "", fmt.Errorf("microvm executor: unable to locate host bridge (set FLEDGE_HOST_BRIDGE to an existing bridge name)")
+}
+
+func interfaceExists(name string) bool {
+	if name == "" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join("/sys/class/net", name))
+	return err == nil
+}
+
+func runIP(ctx context.Context, ipPath string, args ...string) error {
+	cmd := exec.CommandContext(ctx, ipPath, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ip %s: %w (output: %s)", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func generateTapName(vmName string) string {
+	base := sanitizeName(vmName)
+	if len(base) > 8 {
+		base = base[:8]
+	}
+	suffix := fmt.Sprintf("%06x", uint32(time.Now().UnixNano())&0xffffff)
+	name := "flg" + base + suffix
+	if len(name) > 15 {
+		name = name[:15]
+	}
+	return name
 }
 
 func buildUDHCPCScript() string {

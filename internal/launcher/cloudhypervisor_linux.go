@@ -25,8 +25,8 @@ type LaunchSpec struct {
 	DiskPath      string // path to rootfs image (virtio-blk)
 	ReadOnlyRoot  bool
 	InitramfsPath string // optional initramfs archive supplied via --initramfs
-	UseSlirp      bool   // enable Cloud Hypervisor slirp networking
-	SlirpMAC      string // optional MAC address for slirp networking
+	TapDevice     string // host tap interface to attach to the VM
+	MACAddress    string // optional guest MAC address override
 }
 
 // Instance represents a running VM process.
@@ -174,20 +174,20 @@ func (l *Launcher) Launch(ctx context.Context, spec LaunchSpec) (Instance, error
 		args = append(args, "--initramfs", initramfs)
 	}
 
-	if spec.UseSlirp {
-		mac := spec.SlirpMAC
+	if spec.TapDevice != "" {
+		mac := spec.MACAddress
 		if mac == "" {
 			var err error
 			mac, err = generateLocalMAC()
 			if err != nil {
-				return nil, fmt.Errorf("slirp mac: %w", err)
+				return nil, fmt.Errorf("tap mac: %w", err)
 			}
 		} else {
 			if _, err := net.ParseMAC(mac); err != nil {
-				return nil, fmt.Errorf("slirp mac: %w", err)
+				return nil, fmt.Errorf("tap mac: %w", err)
 			}
 		}
-		args = append(args, "--net", fmt.Sprintf("tap=,mac=%s", mac))
+		args = append(args, "--net", fmt.Sprintf("tap=%s,mac=%s", spec.TapDevice, mac))
 	}
 
 	// Serial to file per-VM
@@ -213,4 +213,9 @@ func generateLocalMAC() (string, error) {
 	}
 	buf[0] = (buf[0] | 0x02) & 0xFE
 	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]), nil
+}
+
+// RandomMAC returns a locally administered unicast MAC address suitable for guests.
+func RandomMAC() (string, error) {
+	return generateLocalMAC()
 }
