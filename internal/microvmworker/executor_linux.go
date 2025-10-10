@@ -941,7 +941,6 @@ func buildInitScript(process executor.ProcessInfo) string {
 	buf.WriteString("\t\t\t\t\tcode=$?\n")
 	buf.WriteString("\t\t\t\t\tlog_console \"microvm init: dhcp attempt $attempt on $iface failed with status $code\"\n")
 	buf.WriteString("\t\t\t\tfi\n")
-	buf.WriteString("\t\t\tfi\n")
 	buf.WriteString("\t\t\tdone\n")
 	buf.WriteString("\t\tif [ \"$success\" -eq 1 ]; then\n")
 	buf.WriteString("\t\t\tbreak\n")
