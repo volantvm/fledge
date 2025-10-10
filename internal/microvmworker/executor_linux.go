@@ -1095,8 +1095,8 @@ func (e *Executor) prepareTapDevice(ctx context.Context, vmName string) (string,
 	tapName := generateTapName(vmName)
 	createCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if err := runIP(createCtx, ipPath, "link", "add", "name", tapName, "type", "tap"); err != nil {
-		return "", "", func() {}, fmt.Errorf("microvm executor: create tap %s: %w", tapName, err)
+	if err := createTapInterface(createCtx, ipPath, tapName); err != nil {
+		return "", "", func() {}, err
 	}
 
 	cleanup := func() {
@@ -1118,13 +1118,13 @@ func (e *Executor) prepareTapDevice(ctx context.Context, vmName string) (string,
 		cleanup()
 		return "", "", func() {}, fmt.Errorf("microvm executor: set bridge up (%s): %w", bridge, err)
 	}
-	if err := runIP(createCtx, ipPath, "link", "set", "dev", tapName, "up"); err != nil {
-		cleanup()
-		return "", "", func() {}, fmt.Errorf("microvm executor: bring tap up (%s): %w", tapName, err)
-	}
 	if err := runIP(createCtx, ipPath, "link", "set", "dev", tapName, "master", bridge); err != nil {
 		cleanup()
 		return "", "", func() {}, fmt.Errorf("microvm executor: attach tap %s to bridge %s: %w", tapName, bridge, err)
+	}
+	if err := runIP(createCtx, ipPath, "link", "set", "dev", tapName, "up"); err != nil {
+		cleanup()
+		return "", "", func() {}, fmt.Errorf("microvm executor: bring tap up (%s): %w", tapName, err)
 	}
 
 	logging.Info("microvm executor: attached tap to bridge", "tap", tapName, "bridge", bridge, "mac", mac)
@@ -1164,6 +1164,19 @@ func runIP(ctx context.Context, ipPath string, args ...string) error {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("ip %s: %w (output: %s)", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func createTapInterface(ctx context.Context, ipPath, tapName string) error {
+	if err := runIP(ctx, ipPath, "link", "add", "name", tapName, "type", "tap"); err == nil {
+		return nil
+	} else {
+		firstErr := err
+		logging.Info("microvm executor: ip link tap creation failed; attempting ip tuntap fallback", "tap", tapName, "error", firstErr)
+		if err := runIP(ctx, ipPath, "tuntap", "add", "dev", tapName, "mode", "tap"); err != nil {
+			return fmt.Errorf("microvm executor: create tap %s: %w", tapName, errors.Join(firstErr, err))
+		}
 	}
 	return nil
 }
