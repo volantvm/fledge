@@ -138,6 +138,14 @@ func (e *Executor) Run(ctx context.Context, id string, root executor.Mount, moun
 		_, _ = io.Copy(process.Stderr, bytes.NewReader(stderrBuf))
 	}
 
+	if exitCode < 0 {
+		logging.Warn("microvm executor: guest exit code not captured", "vm", vmName)
+		if waitErr != nil {
+			return nil, fmt.Errorf("microvm executor: vm wait: %w", waitErr)
+		}
+		return nil, fmt.Errorf("microvm executor: guest exit code missing (see previous warnings)")
+	}
+
 	if waitErr != nil {
 		var exitErr *exec.ExitError
 		if errors.As(waitErr, &exitErr) && exitCode >= 0 {
@@ -267,9 +275,19 @@ func (e *Executor) collectResults(ctx context.Context, imagePath, rootDir string
 		ctrlDir := filepath.Join(mountPoint, ".fledge")
 		stdoutBuf, _ = os.ReadFile(filepath.Join(ctrlDir, "stdout"))
 		stderrBuf, _ = os.ReadFile(filepath.Join(ctrlDir, "stderr"))
-		if data, err := os.ReadFile(filepath.Join(ctrlDir, "exit_code")); err == nil {
-			if v, parseErr := strconv.Atoi(strings.TrimSpace(string(data))); parseErr == nil {
+		exitPath := filepath.Join(ctrlDir, "exit_code")
+		if data, err := os.ReadFile(exitPath); err == nil {
+			exitStr := strings.TrimSpace(string(data))
+			if exitStr == "" {
+				logging.Warn("microvm executor: exit code file empty", "path", exitPath)
+			} else if v, parseErr := strconv.Atoi(exitStr); parseErr != nil {
+				logging.Warn("microvm executor: parse exit code", "path", exitPath, "value", exitStr, "error", parseErr)
+			} else {
 				exitCode = v
+			}
+		} else {
+			if !errors.Is(err, os.ErrNotExist) {
+				logging.Warn("microvm executor: read exit code", "path", exitPath, "error", err)
 			}
 		}
 
@@ -411,8 +429,14 @@ func (e *Executor) installSupportBinaries(ctx context.Context, mountPoint, contr
 		return fmt.Errorf("microvm executor: stage busybox: %w", err)
 	}
 
-	if err := ensureSymlink(filepath.Join(binDir, "sh"), "busybox"); err != nil {
-		return fmt.Errorf("microvm executor: link busybox shell: %w", err)
+	for _, applet := range []string{"sh", "ip", "ifconfig", "udhcpc"} {
+		if err := ensureSymlink(filepath.Join(binDir, applet), "busybox"); err != nil {
+			return fmt.Errorf("microvm executor: link busybox %s: %w", applet, err)
+		}
+	}
+	udhcpcScript := filepath.Join(binDir, "udhcpc-script")
+	if err := os.WriteFile(udhcpcScript, []byte(buildUDHCPCScript()), 0o755); err != nil {
+		return fmt.Errorf("microvm executor: write udhcpc script: %w", err)
 	}
 
 	rootShell := filepath.Join(mountPoint, "bin", "sh")
@@ -844,10 +868,111 @@ func buildInitScript(process executor.ProcessInfo) string {
 	buf.WriteString("set -eu\n")
 	buf.WriteString("PATH=/.fledge/bin:$PATH\n")
 	buf.WriteString("export PATH\n")
+	buf.WriteString("export DEBIAN_FRONTEND=${DEBIAN_FRONTEND:-noninteractive}\n")
+	buf.WriteString("log_console() {\n")
+	buf.WriteString("\t/.fledge/bin/busybox printf '%s\\n' \"$*\" > /dev/console\n")
+	buf.WriteString("}\n")
+	buf.WriteString("bring_iface_up() {\n")
+	buf.WriteString("\tlocal iface=\"$1\"\n")
+	buf.WriteString("\tif command -v ip >/dev/null 2>&1; then\n")
+	buf.WriteString("\t\tif ip link set \"$iface\" up >/dev/console 2>&1; then\n")
+	buf.WriteString("\t\t\treturn 0\n")
+	buf.WriteString("\t\telse\n")
+	buf.WriteString("\t\t\tlog_console \"microvm init: ip link set $iface up failed\"\n")
+	buf.WriteString("\t\tfi\n")
+	buf.WriteString("\tfi\n")
+	buf.WriteString("\tif command -v ifconfig >/dev/null 2>&1; then\n")
+	buf.WriteString("\t\tif ifconfig \"$iface\" up >/dev/console 2>&1; then\n")
+	buf.WriteString("\t\t\treturn 0\n")
+	buf.WriteString("\t\telse\n")
+	buf.WriteString("\t\t\tlog_console \"microvm init: ifconfig $iface up failed\"\n")
+	buf.WriteString("\t\tfi\n")
+	buf.WriteString("\tfi\n")
+	buf.WriteString("\treturn 1\n")
+	buf.WriteString("}\n")
+	buf.WriteString("log_iface_state() {\n")
+	buf.WriteString("\tlocal iface=\"$1\"\n")
+	buf.WriteString("\tlocal state_path=\"/sys/class/net/$iface/operstate\"\n")
+	buf.WriteString("\tif [ -f \"$state_path\" ]; then\n")
+	buf.WriteString("\t\tlocal state\n")
+	buf.WriteString("\t\tstate=$(cat \"$state_path\" 2>/dev/null)\n")
+	buf.WriteString("\t\tlog_console \"microvm init: $iface operstate $state\"\n")
+	buf.WriteString("\tfi\n")
+	buf.WriteString("\tlocal carrier_path=\"/sys/class/net/$iface/carrier\"\n")
+	buf.WriteString("\tif [ -f \"$carrier_path\" ]; then\n")
+	buf.WriteString("\t\tlocal carrier\n")
+	buf.WriteString("\t\tcarrier=$(cat \"$carrier_path\" 2>/dev/null)\n")
+	buf.WriteString("\t\tlog_console \"microvm init: $iface carrier $carrier\"\n")
+	buf.WriteString("\tfi\n")
+	buf.WriteString("}\n")
 	buf.WriteString("mkdir -p /.fledge\n")
 	buf.WriteString("mount -t proc proc /proc 2>/dev/null || true\n")
 	buf.WriteString("mount -t sysfs sysfs /sys 2>/dev/null || true\n")
 	buf.WriteString("mount -t tmpfs tmpfs /run 2>/dev/null || true\n")
+	buf.WriteString("/.fledge/bin/busybox ip link set lo up 2>/dev/null || true\n")
+	buf.WriteString("interfaces=\"\"\n")
+	buf.WriteString("if [ -d /sys/class/net ]; then\n")
+	buf.WriteString("\tinterfaces=$(/.fledge/bin/busybox ls /sys/class/net 2>/dev/null | /.fledge/bin/busybox tr '\n' ' ')\n")
+	buf.WriteString("fi\n")
+	buf.WriteString("if [ -z \"$interfaces\" ]; then\n")
+	buf.WriteString("\tinterfaces=\"eth0 ens3 enp0s1 tap0\"\n")
+	buf.WriteString("fi\n")
+	buf.WriteString("log_console \"microvm init: candidate interfaces: $interfaces\"\n")
+	buf.WriteString("if command -v udhcpc >/dev/null 2>&1; then\n")
+	buf.WriteString("\tsuccess=0\n")
+	buf.WriteString("\tfor attempt in 1 2 3 4 5; do\n")
+	buf.WriteString("\t\tfor iface in $interfaces; do\n")
+	buf.WriteString("\t\t\t[ \"$iface\" = \"lo\" ] && continue\n")
+	buf.WriteString("\t\t\tif [ ! -d \"/sys/class/net/$iface\" ]; then\n")
+	buf.WriteString("\t\t\t\tcontinue\n")
+	buf.WriteString("\t\t\tfi\n")
+	buf.WriteString("\t\t\tlog_console \"microvm init: dhcp attempt $attempt on $iface\"\n")
+	buf.WriteString("\t\t\tif ! bring_iface_up \"$iface\"; then\n")
+	buf.WriteString("\t\t\t\tlog_console \"microvm init: unable to bring $iface up\"\n")
+	buf.WriteString("\t\t\t\tcontinue\n")
+	buf.WriteString("\t\t\tfi\n")
+	buf.WriteString("\t\t\tlog_iface_state \"$iface\"\n")
+	buf.WriteString("\t\t\t/.fledge/bin/busybox sleep 1\n")
+	buf.WriteString("\t\t\tif /.fledge/bin/busybox udhcpc -i \"$iface\" -n -v -t 3 -T 5 -s /.fledge/bin/udhcpc-script >>/dev/console 2>&1; then\n")
+	buf.WriteString("\t\t\t\t\tsuccess=1\n")
+	buf.WriteString("\t\t\t\t\tlog_console \"microvm init: dhcp success on $iface\"\n")
+	buf.WriteString("\t\t\t\t\tbreak\n")
+	buf.WriteString("\t\t\t\telse\n")
+	buf.WriteString("\t\t\t\t\tcode=$?\n")
+	buf.WriteString("\t\t\t\t\tlog_console \"microvm init: dhcp attempt $attempt on $iface failed with status $code\"\n")
+	buf.WriteString("\t\t\t\tfi\n")
+	buf.WriteString("\t\t\tfi\n")
+	buf.WriteString("\t\t\tdone\n")
+	buf.WriteString("\t\tif [ \"$success\" -eq 1 ]; then\n")
+	buf.WriteString("\t\t\tbreak\n")
+	buf.WriteString("\t\tfi\n")
+	buf.WriteString("\t\t/.fledge/bin/busybox sleep 1\n")
+	buf.WriteString("\t\tdone\n")
+	buf.WriteString("\tif [ \"$success\" -ne 1 ]; then\n")
+	buf.WriteString("\t\tlog_console \"microvm init: DHCP failed after retries\"\n")
+	buf.WriteString("\t\techo \"microvm init: DHCP failed after retries\" >&2\n")
+	buf.WriteString("\tfi\n")
+	buf.WriteString("else\n")
+	buf.WriteString("\techo \"microvm init: udhcpc unavailable; skipping DHCP\" >&2\n")
+	buf.WriteString("fi\n")
+	buf.WriteString("log_console \"microvm init: ip addr show\"\n")
+	buf.WriteString("if command -v ip >/dev/null 2>&1; then\n")
+	buf.WriteString("\tip addr show > /dev/console\n")
+	buf.WriteString("elif command -v ifconfig >/dev/null 2>&1; then\n")
+	buf.WriteString("\tifconfig -a > /dev/console\n")
+	buf.WriteString("else\n")
+	buf.WriteString("\tlog_console \"microvm init: no ip/ifconfig available for address dump\"\n")
+	buf.WriteString("fi\n")
+	buf.WriteString("log_console \"microvm init: ip route show\"\n")
+	buf.WriteString("if command -v ip >/dev/null 2>&1; then\n")
+	buf.WriteString("\tip route show >/dev/console 2>&1 || true\n")
+	buf.WriteString("else\n")
+	buf.WriteString("\tlog_console \"microvm init: no ip available for route dump\"\n")
+	buf.WriteString("fi\n")
+	buf.WriteString("if [ -f /etc/resolv.conf ]; then\n")
+	buf.WriteString("\tlog_console \"microvm init: /etc/resolv.conf\"\n")
+	buf.WriteString("\t/.fledge/bin/busybox cat /etc/resolv.conf > /dev/console\n")
+	buf.WriteString("fi\n")
 	buf.WriteString("exec > /.fledge/stdout\n")
 	buf.WriteString("exec 2> /.fledge/stderr\n")
 	buf.WriteString("export HOME=${HOME:-/root}\n")
@@ -888,8 +1013,10 @@ func buildInitScript(process executor.ProcessInfo) string {
 	buf.WriteString(";;\n")
 	buf.WriteString("esac\n")
 	buf.WriteString("fi\n")
+	buf.WriteString("log_console \"microvm init: executing command: $*\"\n")
 	buf.WriteString("\"$@\"\n")
 	buf.WriteString("status=$?\n")
+	buf.WriteString("log_console \"microvm init: command exited with status $status\"\n")
 	buf.WriteString("set -e\n")
 	buf.WriteString("printf '%s\n' $status > /.fledge/exit_code\n")
 	buf.WriteString("sync\n")
@@ -939,4 +1066,45 @@ func sanitizeName(name string) string {
 		return "run"
 	}
 	return buf.String()
+}
+
+func buildUDHCPCScript() string {
+	script := `
+#!/.fledge/bin/busybox sh
+set -eu
+
+case "$1" in
+deconfig)
+	/.fledge/bin/busybox ip addr flush dev "$interface" >/dev/null 2>&1 || true
+	/.fledge/bin/busybox ip link set "$interface" down >/dev/null 2>&1 || true
+	;;
+bound|renew)
+	/.fledge/bin/busybox ip addr flush dev "$interface" >/dev/null 2>&1 || true
+	if [ -n "${subnet:-}" ]; then
+		/.fledge/bin/busybox ifconfig "$interface" "$ip" netmask "$subnet" up
+	else
+		/.fledge/bin/busybox ifconfig "$interface" "$ip" up
+	fi
+	/.fledge/bin/busybox ip route flush dev "$interface" >/dev/null 2>&1 || true
+	if [ -n "${router:-}" ]; then
+		/.fledge/bin/busybox ip route add default via "$router" dev "$interface" >/dev/null 2>&1 || true
+	fi
+	> /.fledge/resolv.conf
+	if [ -n "${dns:-}" ]; then
+		for server in $dns; do
+			printf "nameserver %s\n" "$server" >> /.fledge/resolv.conf
+		done
+	fi
+	mkdir -p /etc
+	if [ -s /.fledge/resolv.conf ]; then
+		cp /.fledge/resolv.conf /etc/resolv.conf
+	fi
+	;;
+*)
+	;;
+esac
+
+exit 0
+`
+	return strings.TrimPrefix(script, "\n")
 }
