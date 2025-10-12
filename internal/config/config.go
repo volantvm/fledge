@@ -64,6 +64,16 @@ func applyDefaults(cfg *Config) error {
 		if cfg.Filesystem.Type == "" {
 			cfg.Filesystem.Type = defaults.Type
 		}
+		// Apply squashfs defaults if using squashfs
+		if cfg.Filesystem.Type == "squashfs" {
+			if cfg.Filesystem.CompressionLevel == 0 {
+				cfg.Filesystem.CompressionLevel = defaults.CompressionLevel
+			}
+			if cfg.Filesystem.OverlaySize == "" {
+				cfg.Filesystem.OverlaySize = defaults.OverlaySize
+			}
+		}
+		// Apply legacy ext4/xfs/btrfs defaults
 		if cfg.Filesystem.SizeBufferMB == 0 {
 			cfg.Filesystem.SizeBufferMB = defaults.SizeBufferMB
 		}
@@ -127,13 +137,24 @@ func validateOCIRootfs(cfg *Config) error {
 
 	// Validate filesystem type
 	validFsTypes := map[string]bool{
-		"ext4":  true,
-		"xfs":   true,
-		"btrfs": true,
+		"squashfs": true,
+		"ext4":     true, // legacy
+		"xfs":      true, // legacy
+		"btrfs":    true, // legacy
 	}
 	if !validFsTypes[cfg.Filesystem.Type] {
-		return fmt.Errorf("invalid filesystem type '%s', must be one of: ext4, xfs, btrfs",
+		return fmt.Errorf("invalid filesystem type '%s', must be one of: squashfs (recommended), ext4, xfs, btrfs",
 			cfg.Filesystem.Type)
+	}
+	
+	// Validate squashfs-specific options
+	if cfg.Filesystem.Type == "squashfs" {
+		if cfg.Filesystem.CompressionLevel < 0 || cfg.Filesystem.CompressionLevel > 22 {
+			return fmt.Errorf("squashfs compression_level must be between 0-22, got %d", cfg.Filesystem.CompressionLevel)
+		}
+		if cfg.Filesystem.OverlaySize == "" {
+			return fmt.Errorf("squashfs overlay_size is required")
+		}
 	}
 
 	if cfg.Filesystem.SizeBufferMB < 0 {

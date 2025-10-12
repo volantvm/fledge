@@ -135,8 +135,30 @@ func (l *Launcher) Launch(ctx context.Context, spec LaunchSpec) (Instance, error
 	// Default cmdline
 	cmdline := []string{"console=ttyS0", "panic=1", "rootwait"}
 	if spec.DiskPath != "" {
-		// Use virtio-blk as vda
-		cmdline = append(cmdline, "root=/dev/vda", "rootfstype=ext4", "rw")
+		// Detect filesystem type from file extension
+		fsType := "ext4" // default for legacy .img files
+		overlaySize := ""
+		
+		if strings.HasSuffix(spec.DiskPath, ".squashfs") {
+			fsType = "squashfs"
+			// Default overlay size 1G, can be overridden via kernel args
+			overlaySize = "1G"
+		} else if strings.HasSuffix(spec.DiskPath, ".xfs") {
+			fsType = "xfs"
+		} else if strings.HasSuffix(spec.DiskPath, ".btrfs") {
+			fsType = "btrfs"
+		}
+		
+		// Add root and filesystem type
+		cmdline = append(cmdline, "root=/dev/vda", "rootfstype="+fsType)
+		
+		// For squashfs, it's read-only at lower layer, writable via overlayfs
+		// For others, add rw flag
+		if fsType != "squashfs" {
+			cmdline = append(cmdline, "rw")
+		} else if overlaySize != "" {
+			cmdline = append(cmdline, "overlay_size="+overlaySize)
+		}
 	}
 	if extra := strings.TrimSpace(spec.KernelArgs); extra != "" {
 		cmdline = append(cmdline, strings.Fields(extra)...)
