@@ -5,8 +5,10 @@ package microvmworker
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/containerd/containerd/content/local"
 	"github.com/containerd/containerd/diff/apply"
@@ -31,6 +33,11 @@ import (
 	bolt "go.etcd.io/bbolt"
 
 	ch "github.com/volantvm/fledge/internal/launcher"
+	volantconfig "github.com/volantvm/volant/pkg/config"
+	volantdb "github.com/volantvm/volant/pkg/db"
+	volantsqlite "github.com/volantvm/volant/pkg/db/sqlite"
+	volantnetwork "github.com/volantvm/volant/pkg/network"
+	volantorchestrator "github.com/volantvm/volant/pkg/orchestrator"
 )
 
 // Worker is a skeleton for a BuildKit worker that executes steps inside
@@ -40,6 +47,11 @@ type Worker struct {
 	RuntimeDir    string
 	KernelBZImage string
 	KernelVMLinux string
+	config        volantconfig.ServerConfig
+	store         *volantsqlite.Store
+	network       volantnetwork.Manager
+	gateway       string
+	netmask       string
 }
 
 // NewFromEnv constructs a Worker using environment variables for configuration.
@@ -66,11 +78,44 @@ func NewFromEnv(runtimeDir string) (*Worker, error) {
 	}
 
 	launcher := ch.New(bin, bzImage, vmlinux, runtimeDir, runtimeDir)
+	cfg, err := volantconfig.FromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("microvmworker: load volant config: %w", err)
+	}
+
+	ctx := context.Background()
+	store, err := volantsqlite.Open(ctx, cfg.DatabasePath)
+	if err != nil {
+		return nil, fmt.Errorf("microvmworker: open volant db: %w", err)
+	}
+
+	bridgeMgr, err := volantnetwork.NewBridgeManager(cfg.BridgeName)
+	if err != nil {
+		_ = store.Close(ctx)
+		return nil, fmt.Errorf("microvmworker: init network manager: %w", err)
+	}
+
+	if net.ParseIP(cfg.HostIP) == nil {
+		_ = store.Close(ctx)
+		return nil, fmt.Errorf("microvmworker: invalid host ip %q", cfg.HostIP)
+	}
+
+	_, subnet, err := net.ParseCIDR(cfg.SubnetCIDR)
+	if err != nil {
+		_ = store.Close(ctx)
+		return nil, fmt.Errorf("microvmworker: parse subnet %q: %w", cfg.SubnetCIDR, err)
+	}
+
 	return &Worker{
 		Launcher:      launcher,
 		RuntimeDir:    runtimeDir,
 		KernelBZImage: bzImage,
 		KernelVMLinux: vmlinux,
+		config:        cfg,
+		store:         store,
+		network:       bridgeMgr,
+		gateway:       cfg.HostIP,
+		netmask:       volantorchestrator.FormatNetmask(subnet.Mask),
 	}, nil
 }
 
@@ -200,4 +245,34 @@ func (w *Worker) NewBuildkitWorker(ctx context.Context, root string, hosts docke
 	}
 
 	return wk, nil
+}
+
+func (w *Worker) leaseIP(ctx context.Context) (*volantdb.IPAllocation, error) {
+	if w.store == nil {
+		return nil, fmt.Errorf("microvmworker: ip store not configured")
+	}
+	var alloc *volantdb.IPAllocation
+	if err := volantsqlite.WithTx(ctx, w.store, func(q volantdb.Queries) error {
+		var err error
+		alloc, err = q.IPAllocations().LeaseNextAvailable(ctx)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("microvmworker: lease ip: %w", err)
+	}
+	return alloc, nil
+}
+
+func (w *Worker) releaseIP(ctx context.Context, ip string) error {
+	if w.store == nil {
+		return fmt.Errorf("microvmworker: ip store not configured")
+	}
+	if ip = strings.TrimSpace(ip); ip == "" {
+		return nil
+	}
+	if err := volantsqlite.WithTx(ctx, w.store, func(q volantdb.Queries) error {
+		return q.IPAllocations().Release(ctx, ip)
+	}); err != nil {
+		return fmt.Errorf("microvmworker: release ip %s: %w", ip, err)
+	}
+	return nil
 }
