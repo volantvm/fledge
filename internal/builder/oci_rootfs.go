@@ -242,11 +242,34 @@ func (b *OCIRootfsBuilder) installAgent() error {
 
 	// Copy agent to /bin/kestrel in unpacked rootfs
 	rootfsPath := filepath.Join(b.UnpackedPath, "rootfs")
+	
+	// Verify rootfs directory exists and is a directory
+	if info, err := os.Stat(rootfsPath); err != nil {
+		if os.IsNotExist(err) {
+			// Create rootfs if it doesn't exist
+			if mkdirErr := os.MkdirAll(rootfsPath, 0755); mkdirErr != nil {
+				return fmt.Errorf("rootfs directory does not exist and cannot be created: %w", mkdirErr)
+			}
+		} else {
+			return fmt.Errorf("failed to stat rootfs directory: %w", err)
+		}
+	} else if !info.IsDir() {
+		return fmt.Errorf("rootfs path exists but is not a directory: %s", rootfsPath)
+	}
+	
 	kestrelPath := filepath.Join(rootfsPath, "bin", "kestrel")
+	binDir := filepath.Dir(kestrelPath)
 
-	// Ensure /bin exists
-	if err := os.MkdirAll(filepath.Dir(kestrelPath), 0755); err != nil {
+	// Ensure /bin directory exists
+	if err := os.MkdirAll(binDir, 0755); err != nil {
 		return fmt.Errorf("failed to create /bin directory: %w", err)
+	}
+	
+	// Verify /bin directory was created
+	if info, err := os.Stat(binDir); err != nil {
+		return fmt.Errorf("/bin directory does not exist after mkdir: %w", err)
+	} else if !info.IsDir() {
+		return fmt.Errorf("/bin path exists but is not a directory: %s", binDir)
 	}
 
 	if err := CopyFile(agentPath, kestrelPath, 0755); err != nil {
