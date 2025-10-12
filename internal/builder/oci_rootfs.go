@@ -756,6 +756,34 @@ func (b *OCIRootfsBuilder) buildDockerfileIfNeeded() error {
 		return fmt.Errorf("buildkit build failed: %w", err)
 	}
 
+	// Verify the rootfs was actually created
+	if info, err := os.Stat(destRootfs); err != nil {
+		return fmt.Errorf("buildkit export verification failed - rootfs does not exist: %w", err)
+	} else if !info.IsDir() {
+		return fmt.Errorf("buildkit export verification failed - rootfs is not a directory")
+	}
+
+	// Ensure essential FHS directories exist for agent installation
+	// BuildKit may not export empty directories, so we create them explicitly
+	essentialDirs := []string{
+		filepath.Join(destRootfs, "bin"),
+		filepath.Join(destRootfs, "usr"),
+		filepath.Join(destRootfs, "usr", "bin"),
+		filepath.Join(destRootfs, "usr", "local"),
+		filepath.Join(destRootfs, "usr", "local", "bin"),
+		filepath.Join(destRootfs, "etc"),
+		filepath.Join(destRootfs, "tmp"),
+		filepath.Join(destRootfs, "var"),
+	}
+	
+	for _, dir := range essentialDirs {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("failed to create essential directory %s: %w", dir, err)
+		}
+	}
+	
+	logging.Debug("Essential FHS directories ensured in rootfs")
+
 	b.RootfsReady = true
 	logging.Info("Dockerfile build complete via BuildKit; rootfs prepared")
 	return nil
