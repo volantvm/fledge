@@ -362,14 +362,29 @@ func (b *OCIRootfsBuilder) createSquashfs() error {
 	logging.Info("Creating squashfs image", "compression_level", compressionLevel)
 	
 	// Build mksquashfs command
-	// mksquashfs <source> <dest> -comp <algorithm> -Xcompression-level <level> -noappend
+	// Note: xz compression uses -Xdict-size instead of -Xcompression-level
+	// Dictionary size affects compression ratio (higher = better compression but more RAM)
+	// Map compression level to dictionary size:
+	// Low (1-7): 25% (fast, lower compression)
+	// Medium (8-15): 50% (balanced, default)
+	// High (16-22): 100% (best compression, more RAM)
+	var dictSize string
+	switch {
+	case compressionLevel <= 7:
+		dictSize = "25%"
+	case compressionLevel <= 15:
+		dictSize = "50%"
+	default:
+		dictSize = "100%"
+	}
+	
 	args := []string{
 		rootfsPath,
 		b.ImagePath,
-		"-comp", "xz",                                           // xz compression (best for size)
-		"-Xcompression-level", strconv.Itoa(compressionLevel),  // compression level
-		"-noappend",                                             // don't append to existing image
-		"-no-progress",                                          // disable progress bar
+		"-comp", "xz",              // xz compression (best for size)
+		"-Xdict-size", dictSize,    // dictionary size for xz
+		"-noappend",                // don't append to existing image
+		"-no-progress",             // disable progress bar
 	}
 	
 	cmd := exec.Command("mksquashfs", args...)
