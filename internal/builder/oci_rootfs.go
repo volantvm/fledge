@@ -361,23 +361,31 @@ func (b *OCIRootfsBuilder) createImageFile() error {
 }
 
 // computeBufferMB returns the buffer size in MB based on config and rootfs size.
-// If SizeBufferMB > 0, that explicit value is used. Otherwise a tiered policy applies:
-// <=128MB -> 32MB; <=512MB -> 64MB; <=2GB -> 128MB; >2GB -> 256MB
+// If SizeBufferMB > 0, that explicit value is used. Otherwise uses a percentage-based
+// approach: 25% of rootfs size, with minimum 64MB (for kestrel bootstrap) and maximum 1GB.
 func (b *OCIRootfsBuilder) computeBufferMB(rootfsKB int) int {
 	if b.Config != nil && b.Config.Filesystem != nil && b.Config.Filesystem.SizeBufferMB > 0 {
 		return b.Config.Filesystem.SizeBufferMB
 	}
+	
 	sizeMB := rootfsKB / 1024
-	switch {
-	case sizeMB <= 128:
-		return 32
-	case sizeMB <= 512:
-		return 64
-	case sizeMB <= 2048:
-		return 128
-	default:
-		return 256
+	
+	// Use 25% of rootfs size as buffer
+	bufferMB := sizeMB / 4
+	
+	// Enforce minimum 64MB (needed for kestrel bootstrap and system operations)
+	const minBufferMB = 64
+	if bufferMB < minBufferMB {
+		bufferMB = minBufferMB
 	}
+	
+	// Enforce maximum 1GB (reasonable upper bound)
+	const maxBufferMB = 1024
+	if bufferMB > maxBufferMB {
+		bufferMB = maxBufferMB
+	}
+	
+	return bufferMB
 }
 
 // createFilesystem creates the filesystem on the image file.
