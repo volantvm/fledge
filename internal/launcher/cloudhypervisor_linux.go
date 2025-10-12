@@ -27,6 +27,9 @@ type LaunchSpec struct {
 	InitramfsPath string // optional initramfs archive supplied via --initramfs
 	TapDevice     string // host tap interface to attach to the VM
 	MACAddress    string // optional guest MAC address override
+	IPAddress     string // optional guest IP address hint for Cloud Hypervisor
+	Gateway       string // optional gateway (used in kernel args)
+	Netmask       string // optional netmask hint for Cloud Hypervisor
 }
 
 // Instance represents a running VM process.
@@ -175,6 +178,7 @@ func (l *Launcher) Launch(ctx context.Context, spec LaunchSpec) (Instance, error
 	}
 
 	if spec.TapDevice != "" {
+		netParts := []string{fmt.Sprintf("tap=%s", spec.TapDevice)}
 		mac := spec.MACAddress
 		if mac == "" {
 			var err error
@@ -187,7 +191,14 @@ func (l *Launcher) Launch(ctx context.Context, spec LaunchSpec) (Instance, error
 				return nil, fmt.Errorf("tap mac: %w", err)
 			}
 		}
-		args = append(args, "--net", fmt.Sprintf("tap=%s,mac=%s", spec.TapDevice, mac))
+		netParts = append(netParts, fmt.Sprintf("mac=%s", mac))
+		if ip := strings.TrimSpace(spec.IPAddress); ip != "" {
+			netParts = append(netParts, fmt.Sprintf("ip=%s", ip))
+		}
+		if mask := strings.TrimSpace(spec.Netmask); mask != "" {
+			netParts = append(netParts, fmt.Sprintf("mask=%s", mask))
+		}
+		args = append(args, "--net", strings.Join(netParts, ","))
 	}
 
 	// Serial to file per-VM

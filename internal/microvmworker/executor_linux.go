@@ -27,6 +27,7 @@ import (
 	ch "github.com/volantvm/fledge/internal/launcher"
 	"github.com/volantvm/fledge/internal/logging"
 	"github.com/volantvm/fledge/internal/utils"
+	volantorchestrator "github.com/volantvm/volant/pkg/orchestrator"
 )
 
 // Executor runs BuildKit exec steps inside Cloud Hypervisor microVMs.
@@ -64,7 +65,7 @@ func NewExecutor(w *Worker) (*Executor, error) {
 		worker:     w,
 		workspace:  workspace,
 		supportDir: supportDir,
-		baseKernel: "init=/.fledge/init reboot=k",
+		baseKernel: "init=/.fledge/init root=/dev/vda rootfstype=ext4 rw",
 	}, nil
 }
 
@@ -106,22 +107,30 @@ func (e *Executor) Run(ctx context.Context, id string, root executor.Mount, moun
 	}
 	defer initramfsCleanup()
 
-	tapName, tapMAC, tapCleanup, err := e.prepareTapDevice(ctx, vmName)
+	netResources, netCleanup, err := e.prepareNetworkResources(ctx, vmName)
 	if err != nil {
 		return nil, err
 	}
-	defer tapCleanup()
+	defer netCleanup()
+
+	kernelArgs := strings.TrimSpace(e.baseKernel)
+	if netResources.kernelArgs != "" {
+		kernelArgs = netResources.kernelArgs
+	}
 
 	spec := ch.LaunchSpec{
 		Name:          vmName,
 		CPUCores:      2,
 		MemoryMB:      1536,
-		KernelArgs:    e.baseKernel,
+		KernelArgs:    kernelArgs,
 		DiskPath:      imagePath,
 		ReadOnlyRoot:  false,
 		InitramfsPath: initramfsPath,
-		TapDevice:     tapName,
-		MACAddress:    tapMAC,
+		TapDevice:     netResources.tap,
+		MACAddress:    netResources.mac,
+		IPAddress:     netResources.ip,
+		Netmask:       e.worker.netmask,
+		Gateway:       e.worker.gateway,
 	}
 
 	inst, err := e.worker.BootVM(ctx, vmName, spec)
@@ -883,20 +892,46 @@ func buildInitScript(process executor.ProcessInfo) string {
 	buf.WriteString("}\n")
 	buf.WriteString("bring_iface_up() {\n")
 	buf.WriteString("\tlocal iface=\"$1\"\n")
+	buf.WriteString("\tlocal result=1\n")
 	buf.WriteString("\tif command -v ip >/dev/null 2>&1; then\n")
 	buf.WriteString("\t\tif ip link set \"$iface\" up >/dev/console 2>&1; then\n")
-	buf.WriteString("\t\t\treturn 0\n")
+	buf.WriteString("\t\t\tlog_console \"microvm init: ip link set $iface up succeeded\"\n")
+	buf.WriteString("\t\t\tresult=0\n")
 	buf.WriteString("\t\telse\n")
 	buf.WriteString("\t\t\tlog_console \"microvm init: ip link set $iface up failed\"\n")
 	buf.WriteString("\t\tfi\n")
 	buf.WriteString("\tfi\n")
 	buf.WriteString("\tif command -v ifconfig >/dev/null 2>&1; then\n")
-	buf.WriteString("\t\tif ifconfig \"$iface\" up >/dev/console 2>&1; then\n")
-	buf.WriteString("\t\t\treturn 0\n")
+	buf.WriteString("\t\tif ifconfig \"$iface\" 0.0.0.0 up >/dev/console 2>&1; then\n")
+	buf.WriteString("\t\t\tlog_console \"microvm init: ifconfig $iface 0.0.0.0 up succeeded\"\n")
+	buf.WriteString("\t\t\tresult=0\n")
 	buf.WriteString("\t\telse\n")
-	buf.WriteString("\t\t\tlog_console \"microvm init: ifconfig $iface up failed\"\n")
+	buf.WriteString("\t\t\tlog_console \"microvm init: ifconfig $iface 0.0.0.0 up failed\"\n")
 	buf.WriteString("\t\tfi\n")
 	buf.WriteString("\tfi\n")
+	buf.WriteString("\treturn $result\n")
+	buf.WriteString("}\n")
+	buf.WriteString("wait_iface_ready() {\n")
+	buf.WriteString("\tlocal iface=\"$1\"\n")
+	buf.WriteString("\tlocal state_path=\"/sys/class/net/$iface/operstate\"\n")
+	buf.WriteString("\tlocal carrier_path=\"/sys/class/net/$iface/carrier\"\n")
+	buf.WriteString("\tfor attempt in 1 2 3 4 5; do\n")
+	buf.WriteString("\t\tlocal state=\"unknown\"\n")
+	buf.WriteString("\t\tlocal carrier=\"\"\n")
+	buf.WriteString("\t\tif [ -f \"$state_path\" ]; then\n")
+	buf.WriteString("\t\t\tstate=$(/.fledge/bin/busybox cat \"$state_path\" 2>/dev/null)\n")
+	buf.WriteString("\t\tfi\n")
+	buf.WriteString("\t\tif [ -f \"$carrier_path\" ]; then\n")
+	buf.WriteString("\t\t\tcarrier=$(/.fledge/bin/busybox cat \"$carrier_path\" 2>/dev/null)\n")
+	buf.WriteString("\t\tfi\n")
+	buf.WriteString("\t\tif [ \"$state\" = \"up\" ] && [ \"$carrier\" = \"1\" ]; then\n")
+	buf.WriteString("\t\t\tlog_console \"microvm init: $iface link ready (state $state carrier $carrier)\"\n")
+	buf.WriteString("\t\t\t/.fledge/bin/busybox ip link show \"$iface\" >/dev/console 2>&1 || true\n")
+	buf.WriteString("\t\t\treturn 0\n")
+	buf.WriteString("\t\tfi\n")
+	buf.WriteString("\t\tlog_console \"microvm init: waiting for link on $iface (state $state carrier ${carrier:-unknown})\"\n")
+	buf.WriteString("\t\t/.fledge/bin/busybox sleep 1\n")
+	buf.WriteString("\tdone\n")
 	buf.WriteString("\treturn 1\n")
 	buf.WriteString("}\n")
 	buf.WriteString("log_iface_state() {\n")
@@ -913,6 +948,136 @@ func buildInitScript(process executor.ProcessInfo) string {
 	buf.WriteString("\t\tcarrier=$(cat \"$carrier_path\" 2>/dev/null)\n")
 	buf.WriteString("\t\tlog_console \"microvm init: $iface carrier $carrier\"\n")
 	buf.WriteString("\tfi\n")
+	buf.WriteString("\tlocal flags_path=\"/sys/class/net/$iface/flags\"\n")
+	buf.WriteString("\tif [ -f \"$flags_path\" ]; then\n")
+	buf.WriteString("\t\tlocal flags\n")
+	buf.WriteString("\t\tflags=$(cat \"$flags_path\" 2>/dev/null)\n")
+	buf.WriteString("\t\tlog_console \"microvm init: $iface flags $flags\"\n")
+	buf.WriteString("\tfi\n")
+	buf.WriteString("}\n")
+	buf.WriteString("mask_to_prefix() {\n")
+	buf.WriteString("\tlocal mask=\"$1\"\n")
+	buf.WriteString("\tlocal bits=0\n")
+	buf.WriteString("\tlocal IFS='.'\n")
+	buf.WriteString("\tset -- $mask\n")
+	buf.WriteString("\tfor octet in \"$@\"; do\n")
+	buf.WriteString("\t\tcase \"$octet\" in\n")
+	buf.WriteString("\t\t\t255) bits=$((bits+8));;\n")
+	buf.WriteString("\t\t\t254) bits=$((bits+7));;\n")
+	buf.WriteString("\t\t\t252) bits=$((bits+6));;\n")
+	buf.WriteString("\t\t\t248) bits=$((bits+5));;\n")
+	buf.WriteString("\t\t\t240) bits=$((bits+4));;\n")
+	buf.WriteString("\t\t\t224) bits=$((bits+3));;\n")
+	buf.WriteString("\t\t\t192) bits=$((bits+2));;\n")
+	buf.WriteString("\t\t\t128) bits=$((bits+1));;\n")
+	buf.WriteString("\t\t\t0) ;;\n")
+	buf.WriteString("\t\t\t*) return 1;;\n")
+	buf.WriteString("\t\t\tesac\n")
+	buf.WriteString("\t\tdone\n")
+	buf.WriteString("\techo \"$bits\"\n")
+	buf.WriteString("\treturn 0\n")
+	buf.WriteString("}\n")
+	buf.WriteString("configure_static_network() {\n")
+	buf.WriteString("\tlocal candidates=\"$1\"\n")
+	buf.WriteString("\tlocal cmdline\n")
+	buf.WriteString("\tcmdline=$(cat /proc/cmdline 2>/dev/null || true)\n")
+	buf.WriteString("\tif [ -z \"$cmdline\" ]; then\n")
+	buf.WriteString("\t\tlog_console \"microvm init: empty /proc/cmdline; skipping static network\"\n")
+	buf.WriteString("\t\treturn 1\n")
+	buf.WriteString("\tfi\n")
+	buf.WriteString("\tlocal param=\"\"\n")
+	buf.WriteString("\tfor token in $cmdline; do\n")
+	buf.WriteString("\t\tcase \"$token\" in\n")
+	buf.WriteString("\t\t\tip=*)\n")
+	buf.WriteString("\t\t\t\tparam=${token#ip=}\n")
+	buf.WriteString("\t\t\t;;\n")
+	buf.WriteString("\t\t\tesac\n")
+	buf.WriteString("\t\tdone\n")
+	buf.WriteString("\tif [ -z \"$param\" ]; then\n")
+	buf.WriteString("\t\tlog_console \"microvm init: no ip= kernel parameter\"\n")
+	buf.WriteString("\t\treturn 1\n")
+	buf.WriteString("\tfi\n")
+	buf.WriteString("\tcase \"$param\" in\n")
+	buf.WriteString("\t\tdhcp|on|both|ibft|auto|manual)\n")
+	buf.WriteString("\t\t\tlog_console \"microvm init: ip parameter $param is not static\"\n")
+	buf.WriteString("\t\t\treturn 1\n")
+	buf.WriteString("\t\t;;\n")
+	buf.WriteString("\t\t*) ;;\n")
+	buf.WriteString("\tesac\n")
+	buf.WriteString("\tlocal ip peer gateway mask hostname iface autoconf\n")
+	buf.WriteString("\tlocal IFS=':'\n")
+	buf.WriteString("\tset -- $param\n")
+	buf.WriteString("\tip=${1:-}\n")
+	buf.WriteString("\tpeer=${2:-}\n")
+	buf.WriteString("\tgateway=${3:-}\n")
+	buf.WriteString("\tmask=${4:-}\n")
+	buf.WriteString("\thostname=${5:-}\n")
+	buf.WriteString("\tiface=${6:-eth0}\n")
+	buf.WriteString("\tautoconf=${7:-}\n")
+	buf.WriteString("\tif [ -z \"$ip\" ] || [ -z \"$mask\" ]; then\n")
+	buf.WriteString("\t\tlog_console \"microvm init: incomplete ip= parameter ($param)\"\n")
+	buf.WriteString("\t\treturn 1\n")
+	buf.WriteString("\tfi\n")
+	buf.WriteString("\tlocal prefix\n")
+	buf.WriteString("\tif ! prefix=$(mask_to_prefix \"$mask\"); then\n")
+	buf.WriteString("\t\tlog_console \"microvm init: unsupported netmask $mask\"\n")
+	buf.WriteString("\t\treturn 1\n")
+	buf.WriteString("\tfi\n")
+	buf.WriteString("\tlocal found=0\n")
+	buf.WriteString("\tfor candidate in $candidates; do\n")
+	buf.WriteString("\t\tif [ \"$candidate\" = \"$iface\" ]; then\n")
+	buf.WriteString("\t\t\tfound=1\n")
+	buf.WriteString("\t\t\tbreak\n")
+	buf.WriteString("\t\tfi\n")
+	buf.WriteString("\tdone\n")
+	buf.WriteString("\tif [ $found -ne 1 ]; then\n")
+	buf.WriteString("\t\tlog_console \"microvm init: target interface $iface not found in candidates: $candidates\"\n")
+	buf.WriteString("\tfi\n")
+	buf.WriteString("\tif ! bring_iface_up \"$iface\"; then\n")
+	buf.WriteString("\t\tlog_console \"microvm init: unable to bring $iface up\"\n")
+	buf.WriteString("\t\treturn 1\n")
+	buf.WriteString("\tfi\n")
+	buf.WriteString("\twait_iface_ready \"$iface\" || true\n")
+	buf.WriteString("\tif command -v ip >/dev/null 2>&1; then\n")
+	buf.WriteString("\t\t/.fledge/bin/busybox ip addr flush dev \"$iface\" >/dev/null 2>&1 || true\n")
+	buf.WriteString("\t\tif ! /.fledge/bin/busybox ip addr add \"$ip/$prefix\" dev \"$iface\" >/dev/console 2>&1; then\n")
+	buf.WriteString("\t\t\tlog_console \"microvm init: failed to assign $ip/$prefix to $iface\"\n")
+	buf.WriteString("\t\t\treturn 1\n")
+	buf.WriteString("\t\tfi\n")
+	buf.WriteString("\t\t/.fledge/bin/busybox ip link set \"$iface\" up >/dev/null 2>&1 || true\n")
+	buf.WriteString("\t\tif [ -n \"$gateway\" ]; then\n")
+	buf.WriteString("\t\t\t/.fledge/bin/busybox ip route replace default via \"$gateway\" dev \"$iface\" >/dev/console 2>&1 || true\n")
+	buf.WriteString("\t\tfi\n")
+	buf.WriteString("\telif command -v ifconfig >/dev/null 2>&1; then\n")
+	buf.WriteString("\t\tif ! /.fledge/bin/busybox ifconfig \"$iface\" \"$ip\" netmask \"$mask\" up >/dev/console 2>&1; then\n")
+	buf.WriteString("\t\t\tlog_console \"microvm init: ifconfig failed for $iface\"\n")
+	buf.WriteString("\t\t\treturn 1\n")
+	buf.WriteString("\t\tfi\n")
+	buf.WriteString("\t\tif [ -n \"$gateway\" ] && command -v route >/dev/null 2>&1; then\n")
+	buf.WriteString("\t\t\t/.fledge/bin/busybox route add default gw \"$gateway\" \"$iface\" >/dev/console 2>&1 || true\n")
+	buf.WriteString("\t\tfi\n")
+	buf.WriteString("\telse\n")
+	buf.WriteString("\t\tlog_console \"microvm init: neither ip nor ifconfig available for static configuration\"\n")
+	buf.WriteString("\t\treturn 1\n")
+	buf.WriteString("\tfi\n")
+	buf.WriteString("\tif [ -n \"$hostname\" ]; then\n")
+	buf.WriteString("\t\tif command -v hostname >/dev/null 2>&1; then\n")
+	buf.WriteString("\t\t\thostname \"$hostname\" 2>/dev/null || /.fledge/bin/busybox hostname \"$hostname\" 2>/dev/null || true\n")
+	buf.WriteString("\t\telse\n")
+	buf.WriteString("\t\t\t/.fledge/bin/busybox hostname \"$hostname\" 2>/dev/null || true\n")
+	buf.WriteString("\t\tfi\n")
+	buf.WriteString("\tfi\n")
+	buf.WriteString("\t> /.fledge/resolv.conf\n")
+	buf.WriteString("\tif [ -n \"$gateway\" ]; then\n")
+	buf.WriteString("\t\tprintf 'nameserver %s\\n' \"$gateway\" >> /.fledge/resolv.conf\n")
+	buf.WriteString("\tfi\n")
+	buf.WriteString("\tmkdir -p /etc\n")
+	buf.WriteString("\tif [ -s /.fledge/resolv.conf ]; then\n")
+	buf.WriteString("\t\tcp /.fledge/resolv.conf /etc/resolv.conf >/dev/null 2>&1 || true\n")
+	buf.WriteString("\tfi\n")
+	buf.WriteString("\tlog_iface_state \"$iface\"\n")
+	buf.WriteString("\tlog_console \"microvm init: configured $iface with $ip/$prefix gateway ${gateway:-none}\"\n")
+	buf.WriteString("\treturn 0\n")
 	buf.WriteString("}\n")
 	buf.WriteString("mkdir -p /.fledge\n")
 	buf.WriteString("mount -t proc proc /proc 2>/dev/null || true\n")
@@ -927,41 +1092,8 @@ func buildInitScript(process executor.ProcessInfo) string {
 	buf.WriteString("\tinterfaces=\"eth0 ens3 enp0s1 tap0\"\n")
 	buf.WriteString("fi\n")
 	buf.WriteString("log_console \"microvm init: candidate interfaces: $interfaces\"\n")
-	buf.WriteString("if command -v udhcpc >/dev/null 2>&1; then\n")
-	buf.WriteString("\tsuccess=0\n")
-	buf.WriteString("\tfor attempt in 1 2 3 4 5; do\n")
-	buf.WriteString("\t\tfor iface in $interfaces; do\n")
-	buf.WriteString("\t\t\t[ \"$iface\" = \"lo\" ] && continue\n")
-	buf.WriteString("\t\t\tif [ ! -d \"/sys/class/net/$iface\" ]; then\n")
-	buf.WriteString("\t\t\t\tcontinue\n")
-	buf.WriteString("\t\t\tfi\n")
-	buf.WriteString("\t\t\tlog_console \"microvm init: dhcp attempt $attempt on $iface\"\n")
-	buf.WriteString("\t\t\tif ! bring_iface_up \"$iface\"; then\n")
-	buf.WriteString("\t\t\t\tlog_console \"microvm init: unable to bring $iface up\"\n")
-	buf.WriteString("\t\t\t\tcontinue\n")
-	buf.WriteString("\t\t\tfi\n")
-	buf.WriteString("\t\t\tlog_iface_state \"$iface\"\n")
-	buf.WriteString("\t\t\t/.fledge/bin/busybox sleep 1\n")
-	buf.WriteString("\t\t\tif /.fledge/bin/busybox udhcpc -i \"$iface\" -n -v -t 3 -T 5 -s /.fledge/bin/udhcpc-script >>/dev/console 2>&1; then\n")
-	buf.WriteString("\t\t\t\t\tsuccess=1\n")
-	buf.WriteString("\t\t\t\t\tlog_console \"microvm init: dhcp success on $iface\"\n")
-	buf.WriteString("\t\t\t\t\tbreak\n")
-	buf.WriteString("\t\t\t\telse\n")
-	buf.WriteString("\t\t\t\t\tcode=$?\n")
-	buf.WriteString("\t\t\t\t\tlog_console \"microvm init: dhcp attempt $attempt on $iface failed with status $code\"\n")
-	buf.WriteString("\t\t\t\tfi\n")
-	buf.WriteString("\t\t\tdone\n")
-	buf.WriteString("\t\tif [ \"$success\" -eq 1 ]; then\n")
-	buf.WriteString("\t\t\tbreak\n")
-	buf.WriteString("\t\tfi\n")
-	buf.WriteString("\t\t/.fledge/bin/busybox sleep 1\n")
-	buf.WriteString("\t\tdone\n")
-	buf.WriteString("\tif [ \"$success\" -ne 1 ]; then\n")
-	buf.WriteString("\t\tlog_console \"microvm init: DHCP failed after retries\"\n")
-	buf.WriteString("\t\techo \"microvm init: DHCP failed after retries\" >&2\n")
-	buf.WriteString("\tfi\n")
-	buf.WriteString("else\n")
-	buf.WriteString("\techo \"microvm init: udhcpc unavailable; skipping DHCP\" >&2\n")
+	buf.WriteString("if ! configure_static_network \"$interfaces\"; then\n")
+	buf.WriteString("\tlog_console \"microvm init: static configuration not applied\"\n")
 	buf.WriteString("fi\n")
 	buf.WriteString("log_console \"microvm init: ip addr show\"\n")
 	buf.WriteString("if command -v ip >/dev/null 2>&1; then\n")
@@ -1076,122 +1208,64 @@ func sanitizeName(name string) string {
 	return buf.String()
 }
 
-func (e *Executor) prepareTapDevice(ctx context.Context, vmName string) (string, string, func(), error) {
-	ipPath, err := exec.LookPath("ip")
+type networkResources struct {
+	tap        string
+	mac        string
+	ip         string
+	kernelArgs string
+}
+
+func (e *Executor) prepareNetworkResources(ctx context.Context, vmName string) (*networkResources, func(), error) {
+	cleanup := func() {}
+	if e.worker == nil {
+		return nil, cleanup, fmt.Errorf("microvm executor: worker not configured")
+	}
+	if e.worker.network == nil {
+		return nil, cleanup, fmt.Errorf("microvm executor: network manager not configured")
+	}
+
+	alloc, err := e.worker.leaseIP(ctx)
 	if err != nil {
-		return "", "", func() {}, fmt.Errorf("microvm executor: ip command not found: %w", err)
+		return nil, cleanup, err
 	}
 
-	bridge, err := determineHostBridge()
+	releaseIP := func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := e.worker.releaseIP(releaseCtx, alloc.IPAddress); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+			logging.Warn("microvm executor: release ip", "ip", alloc.IPAddress, "error", err)
+		}
+	}
+
+	mac := volantorchestrator.DeriveMAC(vmName, alloc.IPAddress)
+	tapName, err := e.worker.network.PrepareTap(ctx, vmName, mac)
 	if err != nil {
-		return "", "", func() {}, err
+		releaseIP()
+		return nil, cleanup, fmt.Errorf("microvm executor: prepare tap: %w", err)
 	}
 
-	mac, err := ch.RandomMAC()
-	if err != nil {
-		return "", "", func() {}, fmt.Errorf("microvm executor: generate mac: %w", err)
-	}
+	hostname := volantorchestrator.SanitizeHostname(vmName)
+	extra := strings.TrimSpace(e.baseKernel)
+	kernel := volantorchestrator.BuildKernelCmdline(alloc.IPAddress, e.worker.gateway, e.worker.netmask, hostname, extra)
+	kernel = strings.TrimSpace(kernel)
 
-	tapName := generateTapName(vmName)
-	createCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if err := createTapInterface(createCtx, ipPath, tapName); err != nil {
-		return "", "", func() {}, err
-	}
-
-	cleanup := func() {
+	cleanup = func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := runIP(cleanupCtx, ipPath, "link", "set", "dev", tapName, "nomaster"); err != nil {
-			if !errors.Is(err, context.DeadlineExceeded) {
-				logging.Warn("microvm executor: detach tap", "tap", tapName, "error", err)
-			}
+		if err := e.worker.network.CleanupTap(cleanupCtx, tapName); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+			logging.Warn("microvm executor: cleanup tap", "tap", tapName, "error", err)
 		}
-		if err := runIP(cleanupCtx, ipPath, "link", "del", tapName); err != nil {
-			if !errors.Is(err, context.DeadlineExceeded) {
-				logging.Warn("microvm executor: remove tap", "tap", tapName, "error", err)
-			}
-		}
+		releaseIP()
 	}
 
-	if err := runIP(createCtx, ipPath, "link", "set", "dev", bridge, "up"); err != nil {
-		cleanup()
-		return "", "", func() {}, fmt.Errorf("microvm executor: set bridge up (%s): %w", bridge, err)
-	}
-	if err := runIP(createCtx, ipPath, "link", "set", "dev", tapName, "master", bridge); err != nil {
-		cleanup()
-		return "", "", func() {}, fmt.Errorf("microvm executor: attach tap %s to bridge %s: %w", tapName, bridge, err)
-	}
-	if err := runIP(createCtx, ipPath, "link", "set", "dev", tapName, "up"); err != nil {
-		cleanup()
-		return "", "", func() {}, fmt.Errorf("microvm executor: bring tap up (%s): %w", tapName, err)
-	}
+	logging.Info("microvm executor: prepared network resources", "vm", vmName, "tap", tapName, "ip", alloc.IPAddress, "mac", mac)
 
-	logging.Info("microvm executor: attached tap to bridge", "tap", tapName, "bridge", bridge, "mac", mac)
-
-	return tapName, mac, cleanup, nil
-}
-
-func determineHostBridge() (string, error) {
-	bridge := strings.TrimSpace(os.Getenv("FLEDGE_HOST_BRIDGE"))
-	if bridge != "" {
-		if interfaceExists(bridge) {
-			return bridge, nil
-		}
-		return "", fmt.Errorf("microvm executor: configured bridge %s not found (set FLEDGE_HOST_BRIDGE)", bridge)
-	}
-
-	candidates := []string{"vbr0", "virbr0", "br0"}
-	for _, candidate := range candidates {
-		if interfaceExists(candidate) {
-			return candidate, nil
-		}
-	}
-
-	return "", fmt.Errorf("microvm executor: unable to locate host bridge (set FLEDGE_HOST_BRIDGE to an existing bridge name)")
-}
-
-func interfaceExists(name string) bool {
-	if name == "" {
-		return false
-	}
-	_, err := os.Stat(filepath.Join("/sys/class/net", name))
-	return err == nil
-}
-
-func runIP(ctx context.Context, ipPath string, args ...string) error {
-	cmd := exec.CommandContext(ctx, ipPath, args...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("ip %s: %w (output: %s)", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
-	}
-	return nil
-}
-
-func createTapInterface(ctx context.Context, ipPath, tapName string) error {
-	if err := runIP(ctx, ipPath, "link", "add", "name", tapName, "type", "tap"); err == nil {
-		return nil
-	} else {
-		firstErr := err
-		logging.Info("microvm executor: ip link tap creation failed; attempting ip tuntap fallback", "tap", tapName, "error", firstErr)
-		if err := runIP(ctx, ipPath, "tuntap", "add", "dev", tapName, "mode", "tap"); err != nil {
-			return fmt.Errorf("microvm executor: create tap %s: %w", tapName, errors.Join(firstErr, err))
-		}
-	}
-	return nil
-}
-
-func generateTapName(vmName string) string {
-	base := sanitizeName(vmName)
-	if len(base) > 8 {
-		base = base[:8]
-	}
-	suffix := fmt.Sprintf("%06x", uint32(time.Now().UnixNano())&0xffffff)
-	name := "flg" + base + suffix
-	if len(name) > 15 {
-		name = name[:15]
-	}
-	return name
+	return &networkResources{
+		tap:        tapName,
+		mac:        mac,
+		ip:         alloc.IPAddress,
+		kernelArgs: kernel,
+	}, cleanup, nil
 }
 
 func buildUDHCPCScript() string {
