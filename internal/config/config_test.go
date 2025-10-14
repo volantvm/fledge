@@ -135,8 +135,8 @@ image = "nginx:alpine"
 	if cfg.Filesystem == nil {
 		t.Fatal("expected filesystem config to be populated with defaults")
 	}
-	if cfg.Filesystem.Type != "ext4" {
-		t.Errorf("expected default filesystem type 'ext4', got '%s'", cfg.Filesystem.Type)
+	if cfg.Filesystem.Type != "squashfs" {
+		t.Errorf("expected default filesystem type 'squashfs', got '%s'", cfg.Filesystem.Type)
 	}
 	if cfg.Filesystem.SizeBufferMB != 0 {
 		t.Errorf("expected default size_buffer_mb 0 (auto), got %d", cfg.Filesystem.SizeBufferMB)

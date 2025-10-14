@@ -59,7 +59,17 @@ func NewOCIRootfsBuilder(cfg *config.Config, workDir, outputPath string) *OCIRoo
 
 // Build creates the OCI rootfs filesystem image.
 func (b *OCIRootfsBuilder) Build() error {
-	logging.Info("Building OCI rootfs", "output", b.OutputPath, "image", b.Config.Source.Image)
+	// Adjust output extension based on filesystem type
+	if b.Config.Filesystem.Type == "squashfs" && !strings.HasSuffix(b.OutputPath, ".squashfs") {
+		// Replace .img with .squashfs if using squashfs
+		if strings.HasSuffix(b.OutputPath, ".img") {
+			b.OutputPath = strings.TrimSuffix(b.OutputPath, ".img") + ".squashfs"
+		} else {
+			b.OutputPath = b.OutputPath + ".squashfs"
+		}
+	}
+	
+	logging.Info("Building OCI rootfs", "output", b.OutputPath, "type", b.Config.Filesystem.Type)
 
 	// Create temporary directory
 	tmpDir, err := os.MkdirTemp("", "fledge-oci-*")
@@ -72,7 +82,13 @@ func (b *OCIRootfsBuilder) Build() error {
 	b.TempDir = tmpDir
 	b.OciLayoutPath = filepath.Join(tmpDir, "oci-layout")
 	b.UnpackedPath = filepath.Join(tmpDir, "unpacked-rootfs")
-	b.ImagePath = filepath.Join(tmpDir, "fs-image.img")
+	
+	// Use appropriate temp file extension
+	tempExt := ".img"
+	if b.Config.Filesystem.Type == "squashfs" {
+		tempExt = ".squashfs"
+	}
+	b.ImagePath = filepath.Join(tmpDir, "fs-image"+tempExt)
 	b.MountPoint = filepath.Join(tmpDir, "mnt")
 
 	logging.Debug("Created temporary directories", "temp", tmpDir)
@@ -84,24 +100,47 @@ func (b *OCIRootfsBuilder) Build() error {
 		}
 	}
 
-	// Build steps
-	steps := []struct {
+	// Build steps differ based on filesystem type
+	var steps []struct {
 		name string
 		fn   func() error
-	}{
-		{"Build Dockerfile (if provided)", b.buildDockerfileIfNeeded},
-		{"Download OCI image", b.downloadOCIImage},
-		{"Unpack image layers", b.unpackOCIImage},
-		{"Extract OCI config", b.extractOCIConfig},
-		{"Install kestrel agent", b.installAgent},
-		{"Apply file mappings", b.applyMappings},
-		{"Calculate disk size", b.createImageFile},
-		{"Create filesystem", b.createFilesystem},
-		{"Mount image", b.mountImage},
-		{"Copy rootfs to image", b.copyRootfsToImage},
-		{"Unmount image", b.unmountImage},
-		{"Shrink to optimal size", b.shrinkFilesystem},
-		{"Move to final location", b.moveToFinal},
+	}
+	
+	if b.Config.Filesystem.Type == "squashfs" {
+		// Squashfs pipeline: Build rootfs → Install agent → Create squashfs
+		steps = []struct {
+			name string
+			fn   func() error
+		}{
+			{"Build Dockerfile (if provided)", b.buildDockerfileIfNeeded},
+			{"Download OCI image", b.downloadOCIImage},
+			{"Unpack image layers", b.unpackOCIImage},
+			{"Extract OCI config", b.extractOCIConfig},
+			{"Install kestrel agent", b.installAgent},
+			{"Apply file mappings", b.applyMappings},
+			{"Create squashfs image", b.createSquashfs},
+			{"Move to final location", b.moveToFinal},
+		}
+	} else {
+		// Legacy ext4/xfs/btrfs pipeline: Build rootfs → Create image → Mount → Copy → Shrink
+		steps = []struct {
+			name string
+			fn   func() error
+		}{
+			{"Build Dockerfile (if provided)", b.buildDockerfileIfNeeded},
+			{"Download OCI image", b.downloadOCIImage},
+			{"Unpack image layers", b.unpackOCIImage},
+			{"Extract OCI config", b.extractOCIConfig},
+			{"Install kestrel agent", b.installAgent},
+			{"Apply file mappings", b.applyMappings},
+			{"Calculate disk size", b.createImageFile},
+			{"Create filesystem", b.createFilesystem},
+			{"Mount image", b.mountImage},
+			{"Copy rootfs to image", b.copyRootfsToImage},
+			{"Unmount image", b.unmountImage},
+			{"Shrink to optimal size", b.shrinkFilesystem},
+			{"Move to final location", b.moveToFinal},
+		}
 	}
 
 	for _, step := range steps {
@@ -242,11 +281,34 @@ func (b *OCIRootfsBuilder) installAgent() error {
 
 	// Copy agent to /bin/kestrel in unpacked rootfs
 	rootfsPath := filepath.Join(b.UnpackedPath, "rootfs")
+	
+	// Verify rootfs directory exists and is a directory
+	if info, err := os.Stat(rootfsPath); err != nil {
+		if os.IsNotExist(err) {
+			// Create rootfs if it doesn't exist
+			if mkdirErr := os.MkdirAll(rootfsPath, 0755); mkdirErr != nil {
+				return fmt.Errorf("rootfs directory does not exist and cannot be created: %w", mkdirErr)
+			}
+		} else {
+			return fmt.Errorf("failed to stat rootfs directory: %w", err)
+		}
+	} else if !info.IsDir() {
+		return fmt.Errorf("rootfs path exists but is not a directory: %s", rootfsPath)
+	}
+	
 	kestrelPath := filepath.Join(rootfsPath, "bin", "kestrel")
+	binDir := filepath.Dir(kestrelPath)
 
-	// Ensure /bin exists
-	if err := os.MkdirAll(filepath.Dir(kestrelPath), 0755); err != nil {
+	// Ensure /bin directory exists
+	if err := os.MkdirAll(binDir, 0755); err != nil {
 		return fmt.Errorf("failed to create /bin directory: %w", err)
+	}
+	
+	// Verify /bin directory was created
+	if info, err := os.Stat(binDir); err != nil {
+		return fmt.Errorf("/bin directory does not exist after mkdir: %w", err)
+	} else if !info.IsDir() {
+		return fmt.Errorf("/bin path exists but is not a directory: %s", binDir)
 	}
 
 	if err := CopyFile(agentPath, kestrelPath, 0755); err != nil {
@@ -280,6 +342,66 @@ func (b *OCIRootfsBuilder) applyMappings() error {
 	}
 
 	logging.Info("Custom file mappings applied")
+	return nil
+}
+
+// createSquashfs creates a squashfs compressed read-only filesystem.
+func (b *OCIRootfsBuilder) createSquashfs() error {
+	rootfsPath := filepath.Join(b.UnpackedPath, "rootfs")
+	
+	// Verify rootfs exists
+	if _, err := os.Stat(rootfsPath); err != nil {
+		return fmt.Errorf("rootfs directory does not exist: %w", err)
+	}
+	
+	compressionLevel := b.Config.Filesystem.CompressionLevel
+	if compressionLevel == 0 {
+		compressionLevel = 15 // default
+	}
+	
+	logging.Info("Creating squashfs image", "compression_level", compressionLevel)
+	
+	// Build mksquashfs command
+	// Note: xz compression uses -Xdict-size instead of -Xcompression-level
+	// Dictionary size affects compression ratio (higher = better compression but more RAM)
+	// Map compression level to dictionary size:
+	// Low (1-7): 25% (fast, lower compression)
+	// Medium (8-15): 50% (balanced, default)
+	// High (16-22): 100% (best compression, more RAM)
+	var dictSize string
+	switch {
+	case compressionLevel <= 7:
+		dictSize = "25%"
+	case compressionLevel <= 15:
+		dictSize = "50%"
+	default:
+		dictSize = "100%"
+	}
+	
+	args := []string{
+		rootfsPath,
+		b.ImagePath,
+		"-comp", "xz",              // xz compression (best for size)
+		"-Xdict-size", dictSize,    // dictionary size for xz
+		"-noappend",                // don't append to existing image
+		"-no-progress",             // disable progress bar
+	}
+	
+	cmd := exec.Command("mksquashfs", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("mksquashfs failed: %w\nOutput: %s", err, string(output))
+	}
+	
+	// Get final size
+	info, err := os.Stat(b.ImagePath)
+	if err != nil {
+		return fmt.Errorf("failed to stat squashfs image: %w", err)
+	}
+	
+	sizeMB := float64(info.Size()) / (1024 * 1024)
+	logging.Info("Squashfs image created", "size_mb", fmt.Sprintf("%.2f", sizeMB))
+	
 	return nil
 }
 
@@ -338,23 +460,31 @@ func (b *OCIRootfsBuilder) createImageFile() error {
 }
 
 // computeBufferMB returns the buffer size in MB based on config and rootfs size.
-// If SizeBufferMB > 0, that explicit value is used. Otherwise a tiered policy applies:
-// <=128MB -> 32MB; <=512MB -> 64MB; <=2GB -> 128MB; >2GB -> 256MB
+// If SizeBufferMB > 0, that explicit value is used. Otherwise uses a percentage-based
+// approach: 25% of rootfs size, with minimum 64MB (for kestrel bootstrap) and maximum 1GB.
 func (b *OCIRootfsBuilder) computeBufferMB(rootfsKB int) int {
 	if b.Config != nil && b.Config.Filesystem != nil && b.Config.Filesystem.SizeBufferMB > 0 {
 		return b.Config.Filesystem.SizeBufferMB
 	}
+	
 	sizeMB := rootfsKB / 1024
-	switch {
-	case sizeMB <= 128:
-		return 32
-	case sizeMB <= 512:
-		return 64
-	case sizeMB <= 2048:
-		return 128
-	default:
-		return 256
+	
+	// Use 25% of rootfs size as buffer
+	bufferMB := sizeMB / 4
+	
+	// Enforce minimum 64MB (needed for kestrel bootstrap and system operations)
+	const minBufferMB = 64
+	if bufferMB < minBufferMB {
+		bufferMB = minBufferMB
 	}
+	
+	// Enforce maximum 1GB (reasonable upper bound)
+	const maxBufferMB = 1024
+	if bufferMB > maxBufferMB {
+		bufferMB = maxBufferMB
+	}
+	
+	return bufferMB
 }
 
 // createFilesystem creates the filesystem on the image file.
@@ -732,6 +862,34 @@ func (b *OCIRootfsBuilder) buildDockerfileIfNeeded() error {
 	}); err != nil {
 		return fmt.Errorf("buildkit build failed: %w", err)
 	}
+
+	// Verify the rootfs was actually created
+	if info, err := os.Stat(destRootfs); err != nil {
+		return fmt.Errorf("buildkit export verification failed - rootfs does not exist: %w", err)
+	} else if !info.IsDir() {
+		return fmt.Errorf("buildkit export verification failed - rootfs is not a directory")
+	}
+
+	// Ensure essential FHS directories exist for agent installation
+	// BuildKit may not export empty directories, so we create them explicitly
+	essentialDirs := []string{
+		filepath.Join(destRootfs, "bin"),
+		filepath.Join(destRootfs, "usr"),
+		filepath.Join(destRootfs, "usr", "bin"),
+		filepath.Join(destRootfs, "usr", "local"),
+		filepath.Join(destRootfs, "usr", "local", "bin"),
+		filepath.Join(destRootfs, "etc"),
+		filepath.Join(destRootfs, "tmp"),
+		filepath.Join(destRootfs, "var"),
+	}
+	
+	for _, dir := range essentialDirs {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("failed to create essential directory %s: %w", dir, err)
+		}
+	}
+	
+	logging.Debug("Essential FHS directories ensured in rootfs")
 
 	b.RootfsReady = true
 	logging.Info("Dockerfile build complete via BuildKit; rootfs prepared")

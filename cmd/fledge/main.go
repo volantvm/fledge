@@ -490,6 +490,8 @@ func determineOutputPath(cfg *config.Config, outputPath string) string {
 func getOutputExtension(strategy string) string {
 	switch strategy {
 	case "oci_rootfs":
+		// Note: The actual extension is determined by filesystem type in the builder
+		// This is just a default; builder may append .squashfs instead of .img
 		return ".img"
 	case "initramfs":
 		return ".cpio.gz"

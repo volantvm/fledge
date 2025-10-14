@@ -134,7 +134,7 @@ static void read_root_params(char *root_dev, size_t root_dev_len, char *root_fs,
         root_dev[root_dev_len - 1] = '\0';
     }
     if (root_fs && root_fs_len > 0) {
-        strncpy(root_fs, "ext4", root_fs_len - 1);
+        strncpy(root_fs, "squashfs", root_fs_len - 1);
         root_fs[root_fs_len - 1] = '\0';
     }
 
@@ -172,13 +172,81 @@ static int try_run_buildkit(void) {
     }
 
     mkdir("/newroot", 0755);
-    if (mount(root_dev, "/newroot", root_fs, 0, NULL)) {
-        fprintf(stderr, "C INIT: Failed to mount root device %s (%s): %s\n", root_dev, root_fs, strerror(errno));
-        rmdir("/newroot");
-        return 0;
+    
+    // Handle squashfs + overlayfs setup
+    if (strcmp(root_fs, "squashfs") == 0) {
+        printf("C INIT: Setting up squashfs with overlayfs\n");
+        
+        // Mount squashfs as lower layer (read-only)
+        mkdir("/lower", 0755);
+        if (mount(root_dev, "/lower", "squashfs", MS_RDONLY, NULL)) {
+            fprintf(stderr, "C INIT: Failed to mount squashfs lower layer: %s\n", strerror(errno));
+            rmdir("/lower");
+            rmdir("/newroot");
+            return 0;
+        }
+        
+        // Create upper and work directories for overlayfs
+        mkdir("/upper", 0755);
+        mkdir("/work", 0755);
+        
+        // Mount tmpfs for upper layer (writable)
+        // Parse overlay size from kernel cmdline (default 1G)
+        char overlay_opts[256];
+        snprintf(overlay_opts, sizeof(overlay_opts), "size=1G");
+        
+        // Try to read overlay_size from cmdline
+        FILE *cmdline = fopen("/proc/cmdline", "r");
+        if (cmdline) {
+            char line[4096];
+            if (fgets(line, sizeof(line), cmdline)) {
+                char *saveptr = NULL;
+                for (char *token = strtok_r(line, " \n", &saveptr); token; token = strtok_r(NULL, " \n", &saveptr)) {
+                    if (strncmp(token, "overlay_size=", 13) == 0) {
+                        snprintf(overlay_opts, sizeof(overlay_opts), "size=%s", token + 13);
+                        break;
+                    }
+                }
+            }
+            fclose(cmdline);
+        }
+        
+        if (mount("tmpfs", "/upper", "tmpfs", 0, overlay_opts)) {
+            fprintf(stderr, "C INIT: Failed to mount tmpfs upper layer: %s\n", strerror(errno));
+            umount("/lower");
+            rmdir("/lower");
+            rmdir("/upper");
+            rmdir("/work");
+            rmdir("/newroot");
+            return 0;
+        }
+        
+        // Mount overlayfs (lower=squashfs read-only, upper=tmpfs writable)
+        char overlay_mount_opts[512];
+        snprintf(overlay_mount_opts, sizeof(overlay_mount_opts), 
+                 "lowerdir=/lower,upperdir=/upper,workdir=/work");
+        
+        if (mount("overlay", "/newroot", "overlay", 0, overlay_mount_opts)) {
+            fprintf(stderr, "C INIT: Failed to mount overlayfs: %s\n", strerror(errno));
+            umount("/upper");
+            umount("/lower");
+            rmdir("/lower");
+            rmdir("/upper");
+            rmdir("/work");
+            rmdir("/newroot");
+            return 0;
+        }
+        
+        printf("C INIT: overlayfs mounted (squashfs lower + tmpfs upper with %s)\n", overlay_opts);
+    } else {
+        // Legacy ext4/xfs/btrfs direct mount
+        if (mount(root_dev, "/newroot", root_fs, 0, NULL)) {
+            fprintf(stderr, "C INIT: Failed to mount root device %s (%s): %s\n", root_dev, root_fs, strerror(errno));
+            rmdir("/newroot");
+            return 0;
+        }
+        printf("C INIT: mounted root filesystem from %s (%s)\n", root_dev, root_fs);
     }
-
-    printf("C INIT: mounted root filesystem from %s (%s)\n", root_dev, root_fs);
 
     char init_path[4096] = {0};
     FILE *f = fopen("/newroot/.volant_init", "r");

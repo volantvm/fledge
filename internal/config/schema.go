@@ -57,16 +57,23 @@ type SourceConfig struct {
 }
 
 // FilesystemConfig defines filesystem options for oci_rootfs strategy.
+// Note: squashfs is the default and recommended format (read-only compressed rootfs with overlayfs).
+// ext4/xfs/btrfs are legacy options retained for compatibility.
 type FilesystemConfig struct {
-	Type         string `toml:"type"`
-	SizeBufferMB int    `toml:"size_buffer_mb"`
-	Preallocate  bool   `toml:"preallocate"`
+	Type              string `toml:"type"`
+	SizeBufferMB      int    `toml:"size_buffer_mb"`       // Only used for ext4/xfs/btrfs (legacy)
+	Preallocate       bool   `toml:"preallocate"`           // Only used for ext4/xfs/btrfs (legacy)
+	CompressionLevel  int    `toml:"compression_level"`    // Squashfs compression level (1-22, default 15)
+	OverlaySize       string `toml:"overlay_size"`          // Overlay tmpfs size (e.g., "512M", "1G", "50%"), default "1G"
 }
 
 // DefaultFilesystemConfig returns the default filesystem configuration.
 func DefaultFilesystemConfig() *FilesystemConfig {
 	return &FilesystemConfig{
-		Type:         "ext4",
+		Type:             "squashfs",
+		CompressionLevel: 15,     // Balanced compression
+		OverlaySize:      "1G",   // 1GB tmpfs for runtime writes
+		// Legacy options (only used if Type is ext4/xfs/btrfs)
 		SizeBufferMB: 0,
 		Preallocate:  false,
 	}
