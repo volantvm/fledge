@@ -9,7 +9,8 @@ require (
 	github.com/opencontainers/image-spec v1.1.0-rc5
 	github.com/schollz/progressbar/v3 v3.18.0
 	github.com/spf13/cobra v1.8.1
-	github.com/volantvm/volant v0.6.6
+
+	github.com/volantvm/volant v0.7.0
 	go.etcd.io/bbolt v1.3.9
 	google.golang.org/grpc v1.59.0
 )
