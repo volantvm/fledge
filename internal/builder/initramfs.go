@@ -260,6 +260,9 @@ func (b *InitramfsBuilder) installAgent() error {
 
 	// Copy agent to /bin/kestrel
 	kestrelPath := filepath.Join(b.RootfsDir, "bin", "kestrel")
+	if err := ensureDestDir(b.RootfsDir, filepath.Dir(kestrelPath)); err != nil {
+		return err
+	}
 	if err := CopyFile(agentPath, kestrelPath, 0755); err != nil {
 		return fmt.Errorf("failed to copy kestrel: %w", err)
 	}
