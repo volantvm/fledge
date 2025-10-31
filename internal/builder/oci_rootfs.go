@@ -76,7 +76,13 @@ func (b *OCIRootfsBuilder) Build() error {
 	if err != nil {
 		return fmt.Errorf("failed to create temp directory: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+
+	// Keep temp dir for debugging if FLEDGE_KEEP_TEMP is set
+	if os.Getenv("FLEDGE_KEEP_TEMP") == "" {
+		defer os.RemoveAll(tmpDir)
+	} else {
+		logging.Info("Keeping temp directory for debugging", "path", tmpDir)
+	}
 	defer b.cleanup()
 
 	b.TempDir = tmpDir
