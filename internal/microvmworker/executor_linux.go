@@ -245,16 +245,16 @@ func (e *Executor) prepareDiskImage(ctx context.Context, rootDir string) (string
 		usage = 1 << 20
 	}
 
-	// Use 2x the current usage as overhead to allow for package installations
-	// This scales appropriately: small images get small overhead, large images get more
-	overhead := usage
-	if overhead < 512<<20 {
-		overhead = 512 << 20
+	// Build VMs are temporary, so be generous with space for package installations
+	// Use 3x the base size or minimum 1.5GB to handle large apt-get installs
+	overhead := usage * 2
+	if overhead < 1536<<20 {
+		overhead = 1536 << 20 // 1.5GB minimum overhead
 	}
 
 	total := usage + overhead
-	if total < 512<<20 {
-		total = 512 << 20
+	if total < 2048<<20 {
+		total = 2048 << 20 // 2GB minimum total
 	}
 	const align = 64 << 20
 	if rem := total % align; rem != 0 {
