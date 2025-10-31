@@ -245,7 +245,9 @@ func (e *Executor) prepareDiskImage(ctx context.Context, rootDir string) (string
 		usage = 1 << 20
 	}
 
-	overhead := usage / 2
+	// Use 2x the current usage as overhead to allow for package installations
+	// This scales appropriately: small images get small overhead, large images get more
+	overhead := usage
 	if overhead < 512<<20 {
 		overhead = 512 << 20
 	}
