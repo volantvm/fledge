@@ -156,6 +156,11 @@ func (e *Executor) Run(ctx context.Context, id string, root executor.Mount, moun
 		_, _ = io.Copy(process.Stderr, bytes.NewReader(stderrBuf))
 	}
 
+	// Log stderr if command failed
+	if exitCode != 0 && len(stderrBuf) > 0 {
+		logging.Error("microvm executor: command failed", "exit_code", exitCode, "stderr", string(stderrBuf))
+	}
+
 	if exitCode < 0 {
 		logging.Warn("microvm executor: guest exit code not captured", "vm", vmName)
 		if waitErr != nil {
