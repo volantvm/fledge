@@ -100,17 +100,22 @@ static int load_module(const char *module_name) {
     for (int i = 0; module_paths[i]; i++) {
         snprintf(module_path, sizeof(module_path), module_paths[i], module_name);
         if (stat(module_path, &st) == 0) {
+            printf("C INIT: Found module %s at %s\n", module_name, module_path);
             fd = open(module_path, O_RDONLY);
-            if (fd < 0)
+            if (fd < 0) {
+                fprintf(stderr, "C INIT: Failed to open %s: %s\n", module_path, strerror(errno));
                 continue;
+            }
 
             module_data = malloc(st.st_size);
             if (!module_data) {
+                fprintf(stderr, "C INIT: Failed to allocate memory for %s\n", module_name);
                 close(fd);
                 continue;
             }
 
             if (read(fd, module_data, st.st_size) != st.st_size) {
+                fprintf(stderr, "C INIT: Failed to read %s\n", module_path);
                 free(module_data);
                 close(fd);
                 continue;
@@ -119,6 +124,9 @@ static int load_module(const char *module_name) {
 
             // Try to load the module (syscall 175 on x86_64)
             ret = syscall(175, module_data, st.st_size, "");
+            if (ret != 0) {
+                fprintf(stderr, "C INIT: init_module(%s) failed: %s\n", module_name, strerror(errno));
+            }
             free(module_data);
 
             if (ret == 0) {
@@ -129,16 +137,23 @@ static int load_module(const char *module_name) {
     }
 
     // Module might already be built-in or loaded
+    fprintf(stderr, "C INIT: Module %s not found in initramfs\n", module_name);
     return -1;
 }
 
 // Try to load required filesystem modules
 static void load_filesystem_modules(void) {
+    printf("C INIT: Attempting to load filesystem modules...\n");
+
     // Load squashfs module
-    load_module("squashfs");
+    if (load_module("squashfs") != 0) {
+        printf("C INIT: squashfs module not loaded (may be built-in)\n");
+    }
 
     // Load overlay module
-    load_module("overlay");
+    if (load_module("overlay") != 0) {
+        printf("C INIT: overlay module not loaded (may be built-in)\n");
+    }
 }
 
 
