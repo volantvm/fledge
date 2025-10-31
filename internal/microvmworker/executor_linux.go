@@ -246,15 +246,15 @@ func (e *Executor) prepareDiskImage(ctx context.Context, rootDir string) (string
 	}
 
 	// Build VMs are temporary, so be generous with space for package installations
-	// Use 3x the base size or minimum 1.5GB to handle large apt-get installs
-	overhead := usage * 2
-	if overhead < 1536<<20 {
-		overhead = 1536 << 20 // 1.5GB minimum overhead
+	// Use 4x the base size or minimum 3GB to handle large apt-get installs (opencv, chromium deps, etc)
+	overhead := usage * 3
+	if overhead < 3072<<20 {
+		overhead = 3072 << 20 // 3GB minimum overhead
 	}
 
 	total := usage + overhead
-	if total < 2048<<20 {
-		total = 2048 << 20 // 2GB minimum total
+	if total < 4096<<20 {
+		total = 4096 << 20 // 4GB minimum total
 	}
 	const align = 64 << 20
 	if rem := total % align; rem != 0 {
