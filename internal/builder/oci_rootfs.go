@@ -319,6 +319,11 @@ func (b *OCIRootfsBuilder) installAgent() error {
 		return err
 	}
 
+	// Remove any existing kestrel file (including broken symlinks from build VM)
+	if err := os.Remove(kestrelPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove existing kestrel: %w", err)
+	}
+
 	if err := CopyFile(agentPath, kestrelPath, 0755); err != nil {
 		return fmt.Errorf("failed to copy kestrel: %w", err)
 	}
