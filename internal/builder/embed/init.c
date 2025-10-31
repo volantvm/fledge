@@ -81,6 +81,66 @@ static void trim_trailing_whitespace(char *s) {
     }
 }
 
+// Load a kernel module using syscall
+static int load_module(const char *module_name) {
+    char module_path[256];
+    int fd;
+    struct stat st;
+    void *module_data;
+    int ret;
+
+    // Try to find the module in common locations
+    const char *module_paths[] = {
+        "/lib/modules/%s.ko",
+        "/lib/modules/%s.ko.gz",
+        "/lib/modules/%s.ko.xz",
+        NULL
+    };
+
+    for (int i = 0; module_paths[i]; i++) {
+        snprintf(module_path, sizeof(module_path), module_paths[i], module_name);
+        if (stat(module_path, &st) == 0) {
+            fd = open(module_path, O_RDONLY);
+            if (fd < 0)
+                continue;
+
+            module_data = malloc(st.st_size);
+            if (!module_data) {
+                close(fd);
+                continue;
+            }
+
+            if (read(fd, module_data, st.st_size) != st.st_size) {
+                free(module_data);
+                close(fd);
+                continue;
+            }
+            close(fd);
+
+            // Try to load the module (syscall 175 on x86_64)
+            ret = syscall(175, module_data, st.st_size, "");
+            free(module_data);
+
+            if (ret == 0) {
+                printf("C INIT: Loaded kernel module %s\n", module_name);
+                return 0;
+            }
+        }
+    }
+
+    // Module might already be built-in or loaded
+    return -1;
+}
+
+// Try to load required filesystem modules
+static void load_filesystem_modules(void) {
+    // Load squashfs module
+    load_module("squashfs");
+
+    // Load overlay module
+    load_module("overlay");
+}
+
 
 static int wait_for_block_device(const char *path, int max_attempts, useconds_t delay_us) {
     struct stat st;
@@ -172,11 +232,14 @@ static int try_run_buildkit(void) {
     }
 
     mkdir("/newroot", 0755);
-    
+
     // Handle squashfs + overlayfs setup
     if (strcmp(root_fs, "squashfs") == 0) {
         printf("C INIT: Setting up squashfs with overlayfs\n");
-        
+
+        // Load required kernel modules
+        load_filesystem_modules();
+
         // Mount squashfs as lower layer (read-only)
         mkdir("/lower", 0755);
         if (mount(root_dev, "/lower", "squashfs", MS_RDONLY, NULL)) {

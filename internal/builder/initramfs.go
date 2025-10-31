@@ -62,6 +62,11 @@ func (b *InitramfsBuilder) Build() error {
 		return fmt.Errorf("failed to setup directory structure: %w", err)
 	}
 
+	// Install kernel modules for squashfs and overlay
+	if err := b.installKernelModules(); err != nil {
+		logging.Warn("Failed to install kernel modules (they may be built-in to kernel)", "error", err)
+	}
+
 	// 1) Overlay Docker rootfs if provided (Dockerfile/image)
 	if err := b.overlayDockerRootfsIfProvided(); err != nil {
 		return fmt.Errorf("failed to overlay docker rootfs: %w", err)
@@ -141,6 +146,73 @@ func (b *InitramfsBuilder) setupDirectoryStructure() error {
 	}
 
 	logging.Debug("Directory structure created")
+	return nil
+}
+
+// installKernelModules copies essential kernel modules (squashfs, overlay) into the initramfs.
+// This allows the init to load these modules if they're not built-in to the kernel.
+func (b *InitramfsBuilder) installKernelModules() error {
+	logging.Info("Installing kernel modules")
+
+	// Determine kernel version from running system
+	cmd := exec.Command("uname", "-r")
+	output, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("failed to detect kernel version: %w", err)
+	}
+	kernelVersion := strings.TrimSpace(string(output))
+
+	// Common module locations
+	moduleBasePaths := []string{
+		fmt.Sprintf("/lib/modules/%s/kernel/fs", kernelVersion),
+		"/lib/modules/kernel/fs", // Generic fallback
+	}
+
+	// Modules we need
+	requiredModules := []string{
+		"squashfs/squashfs.ko",
+		"squashfs/squashfs.ko.xz",
+		"squashfs/squashfs.ko.gz",
+		"overlayfs/overlay.ko",
+		"overlayfs/overlay.ko.xz",
+		"overlayfs/overlay.ko.gz",
+		"overlay.ko",
+		"overlay.ko.xz",
+		"overlay.ko.gz",
+	}
+
+	// Create /lib/modules directory in initramfs
+	modulesDir := filepath.Join(b.RootfsDir, "lib", "modules")
+	if err := os.MkdirAll(modulesDir, 0755); err != nil {
+		return fmt.Errorf("failed to create modules directory: %w", err)
+	}
+
+	foundAny := false
+
+	// Try to find and copy modules
+	for _, basePath := range moduleBasePaths {
+		for _, modPath := range requiredModules {
+			fullPath := filepath.Join(basePath, modPath)
+			if _, err := os.Stat(fullPath); err == nil {
+				// Found a module, copy it
+				destName := filepath.Base(modPath)
+				destPath := filepath.Join(modulesDir, destName)
+
+				if err := CopyFile(fullPath, destPath, 0644); err != nil {
+					logging.Warn("Failed to copy kernel module", "module", fullPath, "error", err)
+					continue
+				}
+
+				logging.Info("Installed kernel module", "module", destName)
+				foundAny = true
+			}
+		}
+	}
+
+	if !foundAny {
+		return fmt.Errorf("no kernel modules found - ensure squashfs and overlay modules are available, or use a kernel with them built-in")
+	}
+
 	return nil
 }
 
