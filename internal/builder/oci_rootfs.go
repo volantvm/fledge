@@ -280,11 +280,17 @@ func (b *OCIRootfsBuilder) installAgent() error {
 	defer CleanupAgent(agentPath)
 
 	// Copy agent to /bin/kestrel in unpacked rootfs
+	// Ensure UnpackedPath exists first
+	if err := os.MkdirAll(b.UnpackedPath, 0755); err != nil {
+		return fmt.Errorf("failed to ensure unpacked path: %w", err)
+	}
+
 	rootfsPath := filepath.Join(b.UnpackedPath, "rootfs")
 
 	// Verify rootfs directory exists and is a directory
 	if info, err := os.Stat(rootfsPath); err != nil {
 		if os.IsNotExist(err) {
+			logging.Warn("Rootfs directory does not exist, creating it", "path", rootfsPath)
 			if mkdirErr := os.MkdirAll(rootfsPath, 0755); mkdirErr != nil {
 				return fmt.Errorf("rootfs directory does not exist and cannot be created: %w", mkdirErr)
 			}
