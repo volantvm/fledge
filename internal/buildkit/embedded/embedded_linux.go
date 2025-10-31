@@ -6,9 +6,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -51,6 +53,13 @@ func BuildDockerfileToRootfs(ctx context.Context, dockerfile, contextDir, target
 		return fmt.Errorf("embedded buildkit: create dest dir: %w", err)
 	}
 
+	// Create a temp directory for OCI layout
+	ociDir, err := os.MkdirTemp("", "fledge-buildkit-oci-*")
+	if err != nil {
+		return fmt.Errorf("embedded buildkit: create temp oci dir: %w", err)
+	}
+	defer os.RemoveAll(ociDir)
+
 	client, cleanup, err := newEmbeddedClient(ctx, stateDir)
 	if err != nil {
 		return err
@@ -70,6 +79,7 @@ func BuildDockerfileToRootfs(ctx context.Context, dockerfile, contextDir, target
 		frontendAttrs["build-arg:"+k] = v
 	}
 
+	// Export to OCI image format instead of local directory (much faster)
 	solveOpt := bkclient.SolveOpt{
 		Frontend:      "dockerfile.v0",
 		FrontendAttrs: frontendAttrs,
@@ -79,8 +89,10 @@ func BuildDockerfileToRootfs(ctx context.Context, dockerfile, contextDir, target
 		},
 		Exports: []bkclient.ExportEntry{
 			{
-				Type:      bkclient.ExporterLocal,
-				OutputDir: destDir,
+				Type:   bkclient.ExporterOCI,
+				Output: func(_ map[string]string) (io.WriteCloser, error) {
+					return os.Create(filepath.Join(ociDir, "image.tar"))
+				},
 			},
 		},
 	}
@@ -116,7 +128,8 @@ func BuildDockerfileToRootfs(ctx context.Context, dockerfile, contextDir, target
 					continue
 				}
 				if s.Total > 0 {
-					log.Printf("embedded buildkit: status %s %d/%d", name, s.Current, s.Total)
+					pct := float64(s.Current) / float64(s.Total) * 100
+					log.Printf("embedded buildkit: status %s %d/%d (%.1f%%)", name, s.Current, s.Total, pct)
 					continue
 				}
 				log.Printf("embedded buildkit: status %s", name)
@@ -129,6 +142,29 @@ func BuildDockerfileToRootfs(ctx context.Context, dockerfile, contextDir, target
 	if err != nil {
 		return fmt.Errorf("embedded buildkit: solve failed: %w", err)
 	}
+
+	// Extract the OCI tar to the destination directory using umoci
+	log.Printf("embedded buildkit: extracting OCI image to rootfs")
+	tarPath := filepath.Join(ociDir, "image.tar")
+	ociLayoutDir := filepath.Join(ociDir, "oci-layout")
+
+	// Import tar to OCI layout
+	cmd := exec.CommandContext(ctx, "skopeo", "copy",
+		fmt.Sprintf("oci-archive:%s", tarPath),
+		fmt.Sprintf("oci:%s:latest", ociLayoutDir))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("embedded buildkit: skopeo import failed: %w\nOutput: %s", err, string(output))
+	}
+
+	// Unpack OCI layout to rootfs
+	cmd = exec.CommandContext(ctx, "umoci", "unpack",
+		"--image", fmt.Sprintf("%s:latest", ociLayoutDir),
+		filepath.Dir(destDir))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("embedded buildkit: umoci unpack failed: %w\nOutput: %s", err, string(output))
+	}
+
+	log.Printf("embedded buildkit: rootfs extracted successfully")
 	return nil
 }
 
