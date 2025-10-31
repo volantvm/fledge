@@ -414,10 +414,9 @@ func (b *OCIRootfsBuilder) createSquashfs() error {
 	args := []string{
 		rootfsPath,
 		b.ImagePath,
-		"-comp", "xz", // xz compression (best for size)
-		"-Xdict-size", dictSize, // dictionary size for xz
-		"-noappend",    // don't append to existing image
-		"-no-progress", // disable progress bar
+		"-comp", "gzip", // gzip compression (most compatible)
+		"-noappend",     // don't append to existing image
+		"-no-progress",  // disable progress bar
 	}
 
 	cmd := exec.Command("mksquashfs", args...)
