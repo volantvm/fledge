@@ -304,6 +304,11 @@ func (b *OCIRootfsBuilder) installAgent() error {
 	kestrelPath := filepath.Join(rootfsPath, "bin", "kestrel")
 	binDir := filepath.Dir(kestrelPath)
 
+	// Double-check: ensure /bin exists (should already be created by buildDockerfileIfNeeded)
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		return fmt.Errorf("failed to ensure /bin directory exists: %w", err)
+	}
+
 	if err := ensureDestDir(rootfsPath, binDir); err != nil {
 		return err
 	}
