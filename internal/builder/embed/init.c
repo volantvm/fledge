@@ -209,7 +209,7 @@ static void read_root_params(char *root_dev, size_t root_dev_len, char *root_fs,
         root_dev[root_dev_len - 1] = '\0';
     }
     if (root_fs && root_fs_len > 0) {
-        strncpy(root_fs, "squashfs", root_fs_len - 1);
+        strncpy(root_fs, "ext4", root_fs_len - 1);
         root_fs[root_fs_len - 1] = '\0';
     }
 
