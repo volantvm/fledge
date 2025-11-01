@@ -987,12 +987,22 @@ func (b *OCIRootfsBuilder) generateManifest() error {
 		"checksum": "sha256:" + checksum,
 	}
 
-	// Add resources from template (runtime defaults)
+	// Add resources from template (optional, defaults if missing)
+	cpuCores := 2    // Default CPU cores
+	memoryMB := 2048 // Default memory in MB
+
 	if b.ManifestTpl.Resources != nil {
-		manifest["resources"] = map[string]interface{}{
-			"cpu_cores": b.ManifestTpl.Resources.CPUCores,
-			"memory_mb": b.ManifestTpl.Resources.MemoryMB,
+		if b.ManifestTpl.Resources.CPUCores > 0 {
+			cpuCores = b.ManifestTpl.Resources.CPUCores
 		}
+		if b.ManifestTpl.Resources.MemoryMB > 0 {
+			memoryMB = b.ManifestTpl.Resources.MemoryMB
+		}
+	}
+
+	manifest["resources"] = map[string]interface{}{
+		"cpu_cores": cpuCores,
+		"memory_mb": memoryMB,
 	}
 
 	// Add workload from template
