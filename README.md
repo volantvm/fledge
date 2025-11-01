@@ -41,7 +41,7 @@ chmod +x fledge-linux-amd64 && sudo mv fledge-linux-amd64 /usr/local/bin/fledge
 
 Fledge uses two configuration files:
 - **`fledge.toml`** - Build-time config (image source, filesystem type, agent sourcing)
-- **`manifest.toml`** - Runtime defaults (CPU, memory, workload, network)
+- **`manifest.toml`** - Runtime defaults (workload, network, optional CPU/memory)
 
 ```bash
 # fledge.toml - Build configuration
@@ -69,12 +69,13 @@ name = "nginx"
 version = "1.0.0"
 runtime = "nginx"
 
+# Resources section is OPTIONAL - defaults to cpu_cores=2, memory_mb=2048 if omitted
 [resources]
 cpu_cores = 2
 memory_mb = 512
 
 [workload]
-type = "exec"
+type = "exec"  # Can be "exec", "http", or "grpc"
 entrypoint = ["/usr/sbin/nginx", "-g", "daemon off;"]
 
 [network]
@@ -120,12 +121,13 @@ name = "myapp"
 version = "1.0.0"
 runtime = "myapp"
 
+# Resources section is OPTIONAL - defaults to cpu_cores=2, memory_mb=2048 if omitted
 [resources]
 cpu_cores = 1
 memory_mb = 256
 
 [workload]
-type = "exec"
+type = "exec"  # Can be "exec", "http", or "grpc"
 entrypoint = ["/app/server"]
 
 [network]
@@ -218,12 +220,13 @@ name = "myapp"
 version = "1.0.0"
 runtime = "myapp"
 
+# Resources section is OPTIONAL - omit to use defaults (cpu_cores=2, memory_mb=2048)
 [resources]
 cpu_cores = 1
 memory_mb = 128
 
 [workload]
-type = "exec"
+type = "exec"  # Can be "exec", "http", or "grpc"
 entrypoint = ["/usr/bin/myapp"]
 
 [network]
@@ -263,12 +266,13 @@ name = "myapp"
 version = "1.0.0"
 runtime = "myapp"
 
+# Resources section is OPTIONAL - omit to use defaults (cpu_cores=2, memory_mb=2048)
 [resources]
 cpu_cores = 2
 memory_mb = 512
 
 [workload]
-type = "exec"
+type = "exec"  # Can be "exec", "http", or "grpc"
 entrypoint = ["/usr/bin/myapp", "--port", "8080"]
 
 [network]
@@ -314,8 +318,8 @@ This file contains **runtime defaults** - how the image should run by default in
 | Section | Example | Purpose |
 |---------|---------|---------|
 | Top-level | `schema_version = "v1"`, `name = "nginx"`, `version = "1.0.0"`, `runtime = "nginx"` | Required metadata |
-| `[resources]` | `cpu_cores = 2`, `memory_mb = 512` | Default CPU and memory allocation |
-| `[workload]` | `type = "exec"`, `entrypoint = ["/usr/sbin/nginx", "-g", "daemon off;"]` | Workload type and command with args |
+| `[resources]` | `cpu_cores = 2`, `memory_mb = 512` | **OPTIONAL**: Default CPU/memory (Fledge injects defaults if omitted: cpu_cores=2, memory_mb=2048) |
+| `[workload]` | `type = "exec"` (or "http"/"grpc"), `entrypoint = ["/usr/sbin/nginx", "-g", "daemon off;"]` | Workload type and command with args |
 | `[network]` | `mode = "bridged"`, `expose = [{ port = 80, protocol = "tcp" }]` | Network mode and exposed ports |
 | `[env]` | `LOG_LEVEL = "info"`, `WORKERS = "4"` | Default environment variables |
 | `[actions]` | Custom API actions (advanced) | Plugin-specific actions |
