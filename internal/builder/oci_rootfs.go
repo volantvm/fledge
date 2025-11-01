@@ -1072,6 +1072,9 @@ func (b *OCIRootfsBuilder) generateManifest() error {
 			"type":       b.ManifestTpl.Workload.Type,
 			"entrypoint": b.ManifestTpl.Workload.Entrypoint,
 		}
+		if b.ManifestTpl.Workload.BaseURL != "" {
+			workload["base_url"] = b.ManifestTpl.Workload.BaseURL
+		}
 		if len(b.ManifestTpl.Workload.Env) > 0 {
 			workload["env"] = b.ManifestTpl.Workload.Env
 		}

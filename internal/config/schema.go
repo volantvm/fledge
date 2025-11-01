@@ -130,10 +130,11 @@ type ResourcesConfig struct {
 
 // WorkloadConfig defines the workload type, entrypoint command, and environment.
 type WorkloadConfig struct {
-	Type       string   `toml:"type"`                // "exec", "http", "grpc", etc.
-	Entrypoint []string `toml:"entrypoint"`          // Command and args as array
-	Env        map[string]string `toml:"env,omitempty"` // Workload-specific env vars
-	WorkDir    string   `toml:"workdir,omitempty"`   // Working directory
+	Type       string            `toml:"type"`                // "exec", "http", "grpc", etc.
+	Entrypoint []string          `toml:"entrypoint"`          // Command and args as array
+	BaseURL    string            `toml:"base_url,omitempty"`  // Base URL for HTTP workloads
+	Env        map[string]string `toml:"env,omitempty"`       // Workload-specific env vars
+	WorkDir    string            `toml:"workdir,omitempty"`   // Working directory
 }
 
 // NetworkConfig defines network configuration.
