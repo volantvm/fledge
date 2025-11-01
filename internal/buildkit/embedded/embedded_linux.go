@@ -157,6 +157,11 @@ func BuildDockerfileToRootfs(ctx context.Context, dockerfile, contextDir, target
 	}
 
 	// Unpack OCI layout to rootfs
+	// Remove destDir if it exists (umoci requires it to not exist)
+	if err := os.RemoveAll(destDir); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("embedded buildkit: failed to remove existing destDir: %w", err)
+	}
+
 	cmd = exec.CommandContext(ctx, "umoci", "unpack",
 		"--image", fmt.Sprintf("%s:latest", ociLayoutDir),
 		filepath.Dir(destDir))
