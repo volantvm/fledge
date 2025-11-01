@@ -997,11 +997,23 @@ func (b *OCIRootfsBuilder) generateManifest() error {
 
 	// Add workload from template
 	if b.ManifestTpl.Workload != nil {
+		// Validate required workload fields
+		if b.ManifestTpl.Workload.Type == "" {
+			return fmt.Errorf("workload.type is required in manifest.toml")
+		}
+		if len(b.ManifestTpl.Workload.Entrypoint) == 0 {
+			return fmt.Errorf("workload.entrypoint is required and must be non-empty array in manifest.toml")
+		}
+
 		workload := map[string]interface{}{
+			"type":       b.ManifestTpl.Workload.Type,
 			"entrypoint": b.ManifestTpl.Workload.Entrypoint,
 		}
-		if len(b.ManifestTpl.Workload.Args) > 0 {
-			workload["args"] = b.ManifestTpl.Workload.Args
+		if len(b.ManifestTpl.Workload.Env) > 0 {
+			workload["env"] = b.ManifestTpl.Workload.Env
+		}
+		if b.ManifestTpl.Workload.WorkDir != "" {
+			workload["workdir"] = b.ManifestTpl.Workload.WorkDir
 		}
 		manifest["workload"] = workload
 	}
