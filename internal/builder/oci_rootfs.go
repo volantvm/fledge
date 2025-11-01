@@ -901,11 +901,8 @@ func (b *OCIRootfsBuilder) buildDockerfileIfNeeded() error {
 		ctxDir = filepath.Join(b.WorkDir, ctxDir)
 	}
 
-	// Destination rootfs directory
+	// Destination rootfs directory - don't create it yet, umoci will create it
 	destRootfs := filepath.Join(b.UnpackedPath, "rootfs")
-	if err := os.MkdirAll(destRootfs, 0755); err != nil {
-		return fmt.Errorf("failed to create dest rootfs dir: %w", err)
-	}
 
 	logging.Info("Building Dockerfile via BuildKit", "dockerfile", dfPath, "context", ctxDir, "dest", destRootfs)
 	if err := invokeDockerfileBuilder(context.Background(), DockerfileBuildInput{
