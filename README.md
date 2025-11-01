@@ -74,8 +74,8 @@ cpu_cores = 2
 memory_mb = 512
 
 [workload]
-entrypoint = "/usr/sbin/nginx"
-args = ["-g", "daemon off;"]
+type = "exec"
+entrypoint = ["/usr/sbin/nginx", "-g", "daemon off;"]
 
 [network]
 mode = "bridged"
@@ -125,7 +125,8 @@ cpu_cores = 1
 memory_mb = 256
 
 [workload]
-entrypoint = "/app/server"
+type = "exec"
+entrypoint = ["/app/server"]
 
 [network]
 mode = "bridged"
@@ -222,7 +223,8 @@ cpu_cores = 1
 memory_mb = 128
 
 [workload]
-entrypoint = "/usr/bin/myapp"
+type = "exec"
+entrypoint = ["/usr/bin/myapp"]
 
 [network]
 mode = "vsock"
@@ -266,8 +268,8 @@ cpu_cores = 2
 memory_mb = 512
 
 [workload]
-entrypoint = "/usr/bin/myapp"
-args = ["--port", "8080"]
+type = "exec"
+entrypoint = ["/usr/bin/myapp", "--port", "8080"]
 
 [network]
 mode = "bridged"
@@ -313,7 +315,7 @@ This file contains **runtime defaults** - how the image should run by default in
 |---------|---------|---------|
 | Top-level | `schema_version = "v1"`, `name = "nginx"`, `version = "1.0.0"`, `runtime = "nginx"` | Required metadata |
 | `[resources]` | `cpu_cores = 2`, `memory_mb = 512` | Default CPU and memory allocation |
-| `[workload]` | `entrypoint = "/usr/sbin/nginx"`, `args = ["-g", "daemon off;"]` | Default entrypoint and arguments |
+| `[workload]` | `type = "exec"`, `entrypoint = ["/usr/sbin/nginx", "-g", "daemon off;"]` | Workload type and command with args |
 | `[network]` | `mode = "bridged"`, `expose = [{ port = 80, protocol = "tcp" }]` | Network mode and exposed ports |
 | `[env]` | `LOG_LEVEL = "info"`, `WORKERS = "4"` | Default environment variables |
 | `[actions]` | Custom API actions (advanced) | Plugin-specific actions |

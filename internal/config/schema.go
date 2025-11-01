@@ -128,7 +128,7 @@ type ResourcesConfig struct {
 	MemoryMB int `toml:"memory_mb"`
 }
 
-// WorkloadConfig defines the workload entrypoint and args.
+// WorkloadConfig defines the workload type, entrypoint command, and environment.
 type WorkloadConfig struct {
 	Type       string   `toml:"type"`                // "exec", "http", "grpc", etc.
 	Entrypoint []string `toml:"entrypoint"`          // Command and args as array
