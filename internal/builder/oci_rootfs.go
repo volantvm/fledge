@@ -294,7 +294,7 @@ func (b *OCIRootfsBuilder) installAgent() error {
 	}
 	defer CleanupAgent(agentPath)
 
-	// Copy agent to /bin/kestrel in unpacked rootfs
+	// Copy agent to /usr/bin/kestrel in unpacked rootfs (modern standard location)
 	// Ensure UnpackedPath exists first
 	if err := os.MkdirAll(b.UnpackedPath, 0755); err != nil {
 		return fmt.Errorf("failed to ensure unpacked path: %w", err)
@@ -316,12 +316,12 @@ func (b *OCIRootfsBuilder) installAgent() error {
 		return fmt.Errorf("rootfs path exists but is not a directory: %s", rootfsPath)
 	}
 
-	kestrelPath := filepath.Join(rootfsPath, "bin", "kestrel")
+	kestrelPath := filepath.Join(rootfsPath, "usr", "bin", "kestrel")
 	binDir := filepath.Dir(kestrelPath)
 
-	// Double-check: ensure /bin exists (should already be created by buildDockerfileIfNeeded)
+	// Double-check: ensure /usr/bin exists (should already be created by buildDockerfileIfNeeded)
 	if err := os.MkdirAll(binDir, 0755); err != nil {
-		return fmt.Errorf("failed to ensure /bin directory exists: %w", err)
+		return fmt.Errorf("failed to ensure /usr/bin directory exists: %w", err)
 	}
 
 	if err := ensureDestDir(rootfsPath, binDir); err != nil {
@@ -337,7 +337,60 @@ func (b *OCIRootfsBuilder) installAgent() error {
 		return fmt.Errorf("failed to copy kestrel: %w", err)
 	}
 
+	// Create systemd service for auto-start
+	if err := b.installSystemdService(rootfsPath); err != nil {
+		return fmt.Errorf("failed to install systemd service: %w", err)
+	}
+
 	logging.Info("Kestrel agent installed")
+	return nil
+}
+
+// installSystemdService creates a systemd service file for kestrel agent auto-start.
+func (b *OCIRootfsBuilder) installSystemdService(rootfsPath string) error {
+	systemdDir := filepath.Join(rootfsPath, "etc", "systemd", "system")
+	if err := os.MkdirAll(systemdDir, 0755); err != nil {
+		return fmt.Errorf("failed to create systemd directory: %w", err)
+	}
+
+	serviceContent := `[Unit]
+Description=Volant Kestrel Agent
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/kestrel
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+`
+
+	servicePath := filepath.Join(systemdDir, "kestrel.service")
+	if err := os.WriteFile(servicePath, []byte(serviceContent), 0644); err != nil {
+		return fmt.Errorf("failed to write service file: %w", err)
+	}
+
+	// Enable the service by creating symlink in multi-user.target.wants
+	wantsDir := filepath.Join(systemdDir, "multi-user.target.wants")
+	if err := os.MkdirAll(wantsDir, 0755); err != nil {
+		return fmt.Errorf("failed to create wants directory: %w", err)
+	}
+
+	symlinkPath := filepath.Join(wantsDir, "kestrel.service")
+	serviceRelPath := "../kestrel.service"
+
+	// Remove existing symlink if present
+	os.Remove(symlinkPath)
+
+	if err := os.Symlink(serviceRelPath, symlinkPath); err != nil {
+		return fmt.Errorf("failed to enable service: %w", err)
+	}
+
+	logging.Info("Systemd service created and enabled")
 	return nil
 }
 
