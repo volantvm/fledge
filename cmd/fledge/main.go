@@ -84,6 +84,7 @@ func newVersionCommand() *cobra.Command {
 func newBuildCommand() *cobra.Command {
 	var (
 		configPath      string
+		manifestPath    string
 		outputPath      string
 		dockerfilePath  string
 		contextDir      string
@@ -94,18 +95,23 @@ func newBuildCommand() *cobra.Command {
 
 	buildCmd := &cobra.Command{
 		Use:   "build [DOCKERFILE]",
-		Short: "Build a plugin artifact from fledge.toml or a Dockerfile",
-		Long: `Build Volant plugin artifacts from either a declarative fledge.toml configuration
+		Short: "Build a plugin artifact from fledge.toml + manifest.toml or a Dockerfile",
+		Long: `Build Volant plugin artifacts from either declarative configuration files
+(fledge.toml for build settings + manifest.toml for runtime defaults)
 or directly from a Dockerfile using the embedded BuildKit solver.
 
+The build process produces:
+  1. An artifact (rootfs.img or initramfs.cpio.gz)
+  2. A manifest.json (merged from manifest.toml + build metadata)
+
 Examples:
-  # Build using the default fledge.toml in the current directory
+  # Build using defaults (fledge.toml + manifest.toml in current directory)
   sudo fledge build
 
-  # Build from a specific config file and custom output path
-  sudo fledge build -c path/to/fledge.toml -o dist/rootfs.img
+  # Build from specific config files with custom output
+  sudo fledge build -c build/fledge.toml -m build/manifest.toml -o dist/myapp.img
 
-  # Build directly from a Dockerfile (rootfs image output)
+  # Build directly from a Dockerfile (generates minimal manifest)
   sudo fledge build ./Dockerfile
 
   # Build an initramfs from a Dockerfile with custom context and build args
@@ -121,6 +127,7 @@ Examples:
 
 			return runBuild(buildCLIOptions{
 				ConfigPath:      configPath,
+				ManifestPath:    manifestPath,
 				OutputPath:      outputPath,
 				DockerfilePath:  dockerfilePath,
 				ContextDir:      contextDir,
@@ -128,11 +135,13 @@ Examples:
 				BuildArgs:       buildArgValues,
 				OutputInitramfs: outputInitramfs,
 				ConfigExplicit:  cmd.Flags().Changed("config"),
+				ManifestExplicit: cmd.Flags().Changed("manifest"),
 			})
 		},
 	}
 
-	buildCmd.Flags().StringVarP(&configPath, "config", "c", "fledge.toml", "path to fledge.toml configuration file")
+	buildCmd.Flags().StringVarP(&configPath, "config", "c", "fledge.toml", "path to fledge.toml (build configuration)")
+	buildCmd.Flags().StringVarP(&manifestPath, "manifest", "m", "manifest.toml", "path to manifest.toml (runtime defaults)")
 	buildCmd.Flags().StringVarP(&outputPath, "output", "o", "", "output file path (default: auto-generated)")
 	buildCmd.Flags().StringVar(&dockerfilePath, "dockerfile", "", "path to Dockerfile for direct-build mode (alternative to positional argument)")
 	buildCmd.Flags().StringVar(&contextDir, "context", "", "build context directory (default: directory containing the Dockerfile)")
@@ -184,11 +193,14 @@ func newServeCommand() *cobra.Command {
 			logging.Info("Starting fledge serve", "addr", opts.Addr)
 
 			// wrap build functions matching server signature
+			// Note: Server mode uses default manifest template for now
 			buildFn := func(ctx context.Context, cfg *config.Config, workDir, output string) error {
-				return buildOCIRootfs(ctx, cfg, workDir, output)
+				manifestTpl := config.DefaultManifestTemplate()
+				return buildOCIRootfs(ctx, cfg, manifestTpl, workDir, output)
 			}
 			initramfsFn := func(ctx context.Context, cfg *config.Config, workDir, output string) error {
-				return buildInitramfs(ctx, cfg, workDir, output)
+				manifestTpl := config.DefaultManifestTemplate()
+				return buildInitramfs(ctx, cfg, manifestTpl, workDir, output)
 			}
 
 			return server.Start(ctx, opts, buildFn, initramfsFn)
@@ -203,14 +215,16 @@ func newServeCommand() *cobra.Command {
 }
 
 type buildCLIOptions struct {
-	ConfigPath      string
-	OutputPath      string
-	DockerfilePath  string
-	ContextDir      string
-	Target          string
-	BuildArgs       []string
-	OutputInitramfs bool
-	ConfigExplicit  bool
+	ConfigPath       string
+	ManifestPath     string
+	OutputPath       string
+	DockerfilePath   string
+	ContextDir       string
+	Target           string
+	BuildArgs        []string
+	OutputInitramfs  bool
+	ConfigExplicit   bool
+	ManifestExplicit bool
 }
 
 func runBuild(opts buildCLIOptions) error {
@@ -234,9 +248,17 @@ func runBuild(opts buildCLIOptions) error {
 }
 
 func runConfigBuild(ctx context.Context, opts buildCLIOptions) error {
-	logging.Info("Starting Fledge build", "config", opts.ConfigPath)
+	logging.Info("Starting Fledge build", "config", opts.ConfigPath, "manifest", opts.ManifestPath)
 
+	// Load build config (fledge.toml)
 	cfg, err := loadConfig(opts.ConfigPath)
+	if err != nil {
+		return err
+	}
+
+	// Load manifest template (manifest.toml)
+	// This defines runtime defaults that will be merged with build metadata
+	manifestTpl, err := loadManifestTemplate(opts.ManifestPath, opts.ManifestExplicit)
 	if err != nil {
 		return err
 	}
@@ -251,9 +273,9 @@ func runConfigBuild(ctx context.Context, opts buildCLIOptions) error {
 
 	switch cfg.Strategy {
 	case config.StrategyOCIRootfs:
-		return buildOCIRootfs(ctx, cfg, workDir, output)
+		return buildOCIRootfs(ctx, cfg, manifestTpl, workDir, output)
 	case config.StrategyInitramfs:
-		return buildInitramfs(ctx, cfg, workDir, output)
+		return buildInitramfs(ctx, cfg, manifestTpl, workDir, output)
 	default:
 		return fmt.Errorf("unknown build strategy: %s", cfg.Strategy)
 	}
@@ -353,6 +375,23 @@ func runDockerfileBuild(ctx context.Context, opts buildCLIOptions) error {
 		cfg.Source.BusyboxSHA256 = config.DefaultBusyboxSHA256
 	}
 
+	// Create a minimal manifest template for Dockerfile builds
+	// User can customize this by providing a manifest.toml file
+	imageName := sanitizeFilename(filepath.Base(contextAbs))
+	manifestTpl := &config.ManifestTemplate{
+		SchemaVersion: "v1",
+		Name:          imageName,
+		Version:       "1.0.0",
+		Runtime:       imageName,
+		Resources: &config.ResourcesConfig{
+			CPUCores: 1,
+			MemoryMB: 256,
+		},
+		Network: &config.NetworkConfig{
+			Mode: "bridged",
+		},
+	}
+
 	logging.Info("Starting Dockerfile build",
 		"dockerfile", dfAbs,
 		"context", contextAbs,
@@ -360,9 +399,9 @@ func runDockerfileBuild(ctx context.Context, opts buildCLIOptions) error {
 		"format", strategy)
 
 	if strategy == config.StrategyOCIRootfs {
-		return buildOCIRootfs(ctx, cfg, workDir, outputPath)
+		return buildOCIRootfs(ctx, cfg, manifestTpl, workDir, outputPath)
 	}
-	return buildInitramfs(ctx, cfg, workDir, outputPath)
+	return buildInitramfs(ctx, cfg, manifestTpl, workDir, outputPath)
 }
 
 func parseBuildArgs(args []string) (map[string]string, error) {
@@ -441,6 +480,38 @@ func loadConfig(configPath string) (*config.Config, error) {
 		"strategy", cfg.Strategy)
 
 	return cfg, nil
+}
+
+// loadManifestTemplate loads and validates the manifest template file.
+// If the file doesn't exist and wasn't explicitly specified, returns a default template.
+func loadManifestTemplate(manifestPath string, explicit bool) (*config.ManifestTemplate, error) {
+	logging.Debug("Loading manifest template", "path", manifestPath)
+
+	// Check if manifest file exists
+	_, err := os.Stat(manifestPath)
+	if os.IsNotExist(err) {
+		if explicit {
+			// User explicitly specified a manifest file that doesn't exist
+			return nil, fmt.Errorf("manifest file not found: %s", manifestPath)
+		}
+		// Default manifest.toml doesn't exist, use sensible defaults
+		logging.Warn("Manifest template not found, using defaults", "path", manifestPath)
+		return config.DefaultManifestTemplate(), nil
+	}
+
+	// Parse manifest template
+	tpl, err := config.LoadManifestTemplate(manifestPath)
+	if err != nil {
+		logging.Error("Failed to load manifest template", "error", err)
+		return nil, fmt.Errorf("failed to parse manifest: %w", err)
+	}
+
+	logging.Info("Manifest template loaded successfully",
+		"name", tpl.Name,
+		"version", tpl.Version,
+		"runtime", tpl.Runtime)
+
+	return tpl, nil
 }
 
 // getWorkingDirectory determines the working directory from the config path.
@@ -533,7 +604,7 @@ func sanitizeFilename(name string) string {
 }
 
 // buildOCIRootfs builds an OCI rootfs filesystem image.
-func buildOCIRootfs(ctx context.Context, cfg *config.Config, workDir, outputPath string) error {
+func buildOCIRootfs(ctx context.Context, cfg *config.Config, manifestTpl *config.ManifestTemplate, workDir, outputPath string) error {
 	logging.Info("Building OCI rootfs artifact")
 
 	// Validate OCI-specific requirements
@@ -541,8 +612,8 @@ func buildOCIRootfs(ctx context.Context, cfg *config.Config, workDir, outputPath
 		return fmt.Errorf("either source.image or source.dockerfile is required for oci_rootfs strategy")
 	}
 
-	// Create builder
-	builder := builder.NewOCIRootfsBuilder(cfg, workDir, outputPath)
+	// Create builder with manifest template
+	builder := builder.NewOCIRootfsBuilder(cfg, manifestTpl, workDir, outputPath)
 
 	// Run build
 	if err := builder.Build(); err != nil {
@@ -555,11 +626,11 @@ func buildOCIRootfs(ctx context.Context, cfg *config.Config, workDir, outputPath
 }
 
 // buildInitramfs builds an initramfs CPIO archive.
-func buildInitramfs(ctx context.Context, cfg *config.Config, workDir, outputPath string) error {
+func buildInitramfs(ctx context.Context, cfg *config.Config, manifestTpl *config.ManifestTemplate, workDir, outputPath string) error {
 	logging.Info("Building initramfs artifact")
 
-	// Create builder
-	builder := builder.NewInitramfsBuilder(cfg, workDir, outputPath)
+	// Create builder with manifest template
+	builder := builder.NewInitramfsBuilder(cfg, manifestTpl, workDir, outputPath)
 
 	// Run build
 	if err := builder.Build(); err != nil {

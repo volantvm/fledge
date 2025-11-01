@@ -2,6 +2,8 @@
 
 Fledge offers three ways to handle init/PID 1 in your initramfs, each solving different problems with zero friction.
 
+**Note:** The examples below show `fledge.toml` (build configuration) only. In practice, you'll also create a `manifest.toml` for runtime defaults (CPU, memory, workload, network). See the [examples directory](examples/) for complete configurations.
+
 ---
 
 

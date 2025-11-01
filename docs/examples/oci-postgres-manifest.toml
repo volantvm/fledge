@@ -1,0 +1,30 @@
+# Runtime Defaults for PostgreSQL Database
+#
+# This manifest defines the default runtime behavior for the PostgreSQL database image.
+# These defaults can be overridden at VM creation time with volar flags.
+
+schema_version = "v1"
+name = "postgres"
+version = "15.0.0"
+runtime = "postgres"
+
+[resources]
+cpu_cores = 2
+memory_mb = 1024  # Databases typically need more memory
+
+[workload]
+entrypoint = "/usr/local/bin/docker-entrypoint.sh"
+args = ["postgres"]
+
+[env]
+POSTGRES_PASSWORD = "changeme"
+POSTGRES_USER = "postgres"
+POSTGRES_DB = "postgres"
+PGDATA = "/var/lib/postgresql/data"
+
+[network]
+mode = "bridged"
+
+[[network.expose]]
+port = 5432
+protocol = "tcp"

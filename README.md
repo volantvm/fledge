@@ -39,7 +39,12 @@ chmod +x fledge-linux-amd64 && sudo mv fledge-linux-amd64 /usr/local/bin/fledge
 
 ### Build an OCI-based plugin
 
+Fledge uses two configuration files:
+- **`fledge.toml`** - Build-time config (image source, filesystem type, agent sourcing)
+- **`manifest.toml`** - Runtime defaults (CPU, memory, workload, network)
+
 ```bash
+# fledge.toml - Build configuration
 cat > fledge.toml <<'EOF'
 version = "1"
 strategy = "oci_rootfs"
@@ -52,18 +57,42 @@ version = "latest"
 image = "nginx:alpine"
 
 [filesystem]
-type = "ext4"
-size_buffer_mb = 100
-preallocate = false
+type = "squashfs"           # Default
+compression_level = 15      # 1-22, balanced compression
+overlay_size = "1G"         # tmpfs for runtime writes
 EOF
 
-sudo fledge build
+# manifest.toml - Runtime defaults
+cat > manifest.toml <<'EOF'
+schema_version = "v1"
+name = "nginx"
+version = "1.0.0"
+runtime = "nginx"
+
+[resources]
+cpu_cores = 2
+memory_mb = 512
+
+[workload]
+entrypoint = "/usr/sbin/nginx"
+args = ["-g", "daemon off;"]
+
+[network]
+mode = "bridged"
+
+[[network.expose]]
+port = 80
+protocol = "tcp"
+EOF
+
+sudo fledge build --config fledge.toml --manifest manifest.toml
 # → outputs nginx-rootfs.img + nginx.manifest.json
 ```
 
 ### Build from a Dockerfile (OCI rootfs)
 
 ```bash
+# fledge.toml
 cat > fledge.toml <<'EOF'
 version = "1"
 strategy = "oci_rootfs"
@@ -79,12 +108,30 @@ target = ""              # optional multi-stage target
 build_args = { FOO = "bar" }
 
 [filesystem]
-type = "ext4"
-size_buffer_mb = 100
-preallocate = false
+type = "squashfs"           # Default
+compression_level = 15      # 1-22, balanced compression
+overlay_size = "1G"         # tmpfs for runtime writes
 EOF
 
-sudo fledge build
+# manifest.toml
+cat > manifest.toml <<'EOF'
+schema_version = "v1"
+name = "myapp"
+version = "1.0.0"
+runtime = "myapp"
+
+[resources]
+cpu_cores = 1
+memory_mb = 256
+
+[workload]
+entrypoint = "/app/server"
+
+[network]
+mode = "bridged"
+EOF
+
+sudo fledge build --config fledge.toml --manifest manifest.toml
 ```
 
 Notes:
@@ -123,8 +170,8 @@ Fledge now uses an embedded BuildKit solver by default (no external buildkitd). 
 
 Environment variables:
 - `CLOUDHYPERVISOR` — path to the `cloud-hypervisor` binary (default: `cloud-hypervisor` in PATH)
-- `FLEDGE_KERNEL_BZIMAGE` — path to bzImage (default: `/var/lib/volant/kernel/bzImage`)
-- `FLEDGE_KERNEL_VMLINUX` — path to vmlinux (used if bzImage not provided; default: `/var/lib/volant/kernel/vmlinux`)
+- `FLEDGE_KERNEL_BZIMAGE` — path to bzImage (compressed, default: `/var/lib/volant/kernel/bzImage`)
+- `FLEDGE_KERNEL_VMLINUX` — path to vmlinux (uncompressed ELF, default: `/var/lib/volant/kernel/vmlinux`)
 
 Switching modes:
 - Embedded (default): no env required
@@ -146,6 +193,7 @@ Note: On non-Linux platforms, the embedded path is not available; use the extern
 ## Minimal Initramfs Example
 
 ```toml
+# fledge.toml - Build configuration
 version = "1"
 strategy = "initramfs"
 
@@ -162,15 +210,34 @@ version = "latest"
 "./myapp" = "/usr/bin/myapp"
 ```
 
+```toml
+# manifest.toml - Runtime defaults
+schema_version = "v1"
+name = "myapp"
+version = "1.0.0"
+runtime = "myapp"
+
+[resources]
+cpu_cores = 1
+memory_mb = 128
+
+[workload]
+entrypoint = "/usr/bin/myapp"
+
+[network]
+mode = "vsock"
+```
+
 ```bash
-sudo fledge build
-volar plugins install --manifest myapp.manifest.json
-volar vms create demo --plugin myapp
+sudo fledge build --config fledge.toml --manifest manifest.toml
+volar images install --manifest myapp.manifest.json
+volar vms create demo --image myapp
 ```
 
 ### Initramfs from a Dockerfile (overlay → busybox → kestrel/init)
 
 ```toml
+# fledge.toml
 version = "1"
 strategy = "initramfs"
 
@@ -187,20 +254,49 @@ context = "."
 "./myapp" = "/usr/bin/myapp"
 ```
 
+```toml
+# manifest.toml
+schema_version = "v1"
+name = "myapp"
+version = "1.0.0"
+runtime = "myapp"
+
+[resources]
+cpu_cores = 2
+memory_mb = 512
+
+[workload]
+entrypoint = "/usr/bin/myapp"
+args = ["--port", "8080"]
+
+[network]
+mode = "bridged"
+
+[[network.expose]]
+port = 8080
+protocol = "tcp"
+```
+
 Notes:
 - If `busybox_url` is omitted, a pinned musl-static BusyBox is injected by default
 - The built image filesystem is overlaid into the initramfs before adding Kestrel/init (Mode 1)
 
 ---
 
-## fledge.toml Reference (abridged)
+## Configuration Reference
+
+Fledge uses two separate configuration files to maintain clean separation between build-time and runtime concerns:
+
+### fledge.toml Reference (Build-Time Configuration)
+
+This file contains **only build-time settings** - how to build the artifact.
 
 | Section | Example | Purpose |
 |---------|---------|---------|
 | Top-level | `version = "1"`, `strategy = "oci_rootfs"` | Required metadata |
 | `[agent]` | `source_strategy = "release"`, `version = "latest"` | Kestrel agent source. Required for `oci_rootfs`. Used for `initramfs` default mode (omit `[init]`). Not allowed with `[init] path=...` or `[init] none=true`. |
 | `[source]` | `image = "nginx:alpine"` or `dockerfile = "./Dockerfile"` (+ `context`, `target`, `build_args`) for image input; `busybox_url`/`busybox_sha256` optional for initramfs (defaults applied) | Build input |
-| `[filesystem]` | `type = "ext4"`, `size_buffer_mb = 100` | Required for `oci_rootfs` |
+| `[filesystem]` | `type = "squashfs"` (default), `compression_level = 15`, `overlay_size = "1G"` | Required for `oci_rootfs`; ext4/xfs/btrfs available as legacy options |
 | `[init]` | `path = "/usr/local/bin/my-init"` or `none = true` | Initramfs only; choose custom init or no wrapper |
 | `[mappings]` | `"local" = "/dest"` | Optional file/directory mappings |
 
@@ -208,6 +304,25 @@ Note on agent requirements:
 - OCI Rootfs: `[agent]` is required.
 - Initramfs default (no `[init]`): Kestrel is used; `[agent]` can be specified explicitly or defaulted to `source_strategy = "release"`, `version = "latest"`.
 - Initramfs with `[init] path=...` or `[init] none=true`: Do not include `[agent]` (Kestrel is not used).
+
+### manifest.toml Reference (Runtime Defaults Configuration)
+
+This file contains **runtime defaults** - how the image should run by default in Volant.
+
+| Section | Example | Purpose |
+|---------|---------|---------|
+| Top-level | `schema_version = "v1"`, `name = "nginx"`, `version = "1.0.0"`, `runtime = "nginx"` | Required metadata |
+| `[resources]` | `cpu_cores = 2`, `memory_mb = 512` | Default CPU and memory allocation |
+| `[workload]` | `entrypoint = "/usr/sbin/nginx"`, `args = ["-g", "daemon off;"]` | Default entrypoint and arguments |
+| `[network]` | `mode = "bridged"`, `expose = [{ port = 80, protocol = "tcp" }]` | Network mode and exposed ports |
+| `[env]` | `LOG_LEVEL = "info"`, `WORKERS = "4"` | Default environment variables |
+| `[actions]` | Custom API actions (advanced) | Plugin-specific actions |
+
+**Note:** These defaults can be overridden at VM creation time via `volar vms create` flags.
+
+### Generated Output: manifest.json
+
+Fledge automatically merges `manifest.toml` (runtime defaults) with build metadata (artifact URL, checksum, format) to generate `manifest.json`, which is published alongside your artifact.
 
 ---
 

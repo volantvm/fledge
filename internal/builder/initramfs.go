@@ -2,7 +2,10 @@ package builder
 
 import (
 	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -27,6 +30,7 @@ const (
 // InitramfsBuilder builds initramfs archives following the Volant specification.
 type InitramfsBuilder struct {
 	Config           *config.Config
+	ManifestTpl      *config.ManifestTemplate
 	WorkDir          string
 	RootfsDir        string
 	OutputPath       string
@@ -35,11 +39,12 @@ type InitramfsBuilder struct {
 }
 
 // NewInitramfsBuilder creates a new initramfs builder.
-func NewInitramfsBuilder(cfg *config.Config, workDir, outputPath string) *InitramfsBuilder {
+func NewInitramfsBuilder(cfg *config.Config, manifestTpl *config.ManifestTemplate, workDir, outputPath string) *InitramfsBuilder {
 	return &InitramfsBuilder{
-		Config:     cfg,
-		WorkDir:    workDir,
-		OutputPath: outputPath,
+		Config:      cfg,
+		ManifestTpl: manifestTpl,
+		WorkDir:     workDir,
+		OutputPath:  outputPath,
 	}
 }
 
@@ -113,6 +118,11 @@ func (b *InitramfsBuilder) Build() error {
 
 	if err := b.createArchive(); err != nil {
 		return fmt.Errorf("failed to create archive: %w", err)
+	}
+
+	// Generate manifest.json
+	if err := b.generateManifest(); err != nil {
+		return fmt.Errorf("failed to generate manifest: %w", err)
 	}
 
 	logging.Info("Initramfs build complete", "output", b.OutputPath)
@@ -689,4 +699,153 @@ func (b *InitramfsBuilder) installCustomInit() error {
 
 	logging.Info("Custom init binary installed successfully")
 	return nil
+}
+
+// generateManifest creates the manifest.json file by merging the manifest template
+// with build metadata (checksum, URL, format).
+func (b *InitramfsBuilder) generateManifest() error {
+	logging.Info("Generating manifest.json")
+
+	// Compute SHA256 checksum of the built initramfs
+	checksum, err := computeInitramfsSHA256(b.OutputPath)
+	if err != nil {
+		return fmt.Errorf("failed to compute checksum: %w", err)
+	}
+
+	logging.Info("Computed initramfs checksum", "sha256", checksum)
+
+	// Build the final manifest by merging template + build metadata
+	manifest := make(map[string]interface{})
+
+	// Copy fields from manifest template
+	if b.ManifestTpl != nil {
+		manifest["schema_version"] = b.ManifestTpl.SchemaVersion
+		manifest["name"] = b.ManifestTpl.Name
+		manifest["version"] = b.ManifestTpl.Version
+		manifest["runtime"] = b.ManifestTpl.Runtime
+
+		// Resources
+		if b.ManifestTpl.Resources != nil {
+			manifest["resources"] = map[string]interface{}{
+				"cpu_cores": b.ManifestTpl.Resources.CPUCores,
+				"memory_mb": b.ManifestTpl.Resources.MemoryMB,
+			}
+		}
+
+		// Workload
+		if b.ManifestTpl.Workload != nil {
+			workload := map[string]interface{}{
+				"entrypoint": b.ManifestTpl.Workload.Entrypoint,
+			}
+			if len(b.ManifestTpl.Workload.Args) > 0 {
+				workload["args"] = b.ManifestTpl.Workload.Args
+			}
+			manifest["workload"] = workload
+		}
+
+		// Environment variables
+		if len(b.ManifestTpl.Env) > 0 {
+			manifest["env"] = b.ManifestTpl.Env
+		}
+
+		// Network
+		if b.ManifestTpl.Network != nil {
+			network := map[string]interface{}{
+				"mode": b.ManifestTpl.Network.Mode,
+			}
+			if len(b.ManifestTpl.Network.Expose) > 0 {
+				expose := make([]map[string]interface{}, len(b.ManifestTpl.Network.Expose))
+				for i, port := range b.ManifestTpl.Network.Expose {
+					portMap := map[string]interface{}{
+						"port":     port.Port,
+						"protocol": port.Protocol,
+					}
+					if port.HostPort > 0 {
+						portMap["host_port"] = port.HostPort
+					}
+					expose[i] = portMap
+				}
+				network["expose"] = expose
+			}
+			manifest["network"] = network
+		}
+
+		// Actions
+		if len(b.ManifestTpl.Actions) > 0 {
+			actions := make(map[string]interface{})
+			for name, action := range b.ManifestTpl.Actions {
+				actions[name] = map[string]interface{}{
+					"path":   action.Path,
+					"method": action.Method,
+				}
+			}
+			manifest["actions"] = actions
+		}
+
+		// Cloud-init
+		if b.ManifestTpl.CloudInit != nil {
+			cloudInit := make(map[string]interface{})
+			if b.ManifestTpl.CloudInit.Datasource != "" {
+				cloudInit["datasource"] = b.ManifestTpl.CloudInit.Datasource
+			}
+			if b.ManifestTpl.CloudInit.UserData != nil {
+				userData := map[string]interface{}{
+					"inline":  b.ManifestTpl.CloudInit.UserData.Inline,
+					"content": b.ManifestTpl.CloudInit.UserData.Content,
+				}
+				cloudInit["user_data"] = userData
+			}
+			if len(b.ManifestTpl.CloudInit.MetaData) > 0 {
+				cloudInit["meta_data"] = b.ManifestTpl.CloudInit.MetaData
+			}
+			if len(cloudInit) > 0 {
+				manifest["cloud_init"] = cloudInit
+			}
+		}
+
+		// Devices
+		if b.ManifestTpl.Devices != nil && len(b.ManifestTpl.Devices.PCIPassthrough) > 0 {
+			manifest["devices"] = map[string]interface{}{
+				"pci_passthrough": b.ManifestTpl.Devices.PCIPassthrough,
+			}
+		}
+	}
+
+	// Add build metadata - initramfs section
+	// The initramfs format is always cpio.gz for this builder
+	manifest["initramfs"] = map[string]interface{}{
+		"url":      "file://" + b.OutputPath,
+		"format":   "cpio.gz",
+		"checksum": "sha256:" + checksum,
+	}
+
+	// Write manifest.json
+	manifestPath := b.OutputPath + ".manifest.json"
+	manifestData, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal manifest JSON: %w", err)
+	}
+
+	if err := os.WriteFile(manifestPath, manifestData, 0644); err != nil {
+		return fmt.Errorf("failed to write manifest file: %w", err)
+	}
+
+	logging.Info("Manifest generated successfully", "path", manifestPath)
+	return nil
+}
+
+// computeInitramfsSHA256 computes the SHA256 checksum of the initramfs file.
+func computeInitramfsSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to open file: %w", err)
+	}
+	defer f.Close()
+
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, f); err != nil {
+		return "", fmt.Errorf("failed to compute hash: %w", err)
+	}
+
+	return hex.EncodeToString(hasher.Sum(nil)), nil
 }

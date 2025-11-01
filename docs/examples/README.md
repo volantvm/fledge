@@ -1,6 +1,22 @@
 # Fledge Configuration Examples
 
-This directory contains example `fledge.toml` configurations for common use cases.
+This directory contains example configurations for common use cases.
+
+## Configuration Files
+
+Each example consists of **two files**:
+
+1. **`*-manifest.toml`** - Runtime defaults (CPU, memory, workload, network)
+   - These define how the image should run in Volant by default
+   - Can be overridden at VM creation time
+
+2. **`*.toml`** - Build configuration (image source, filesystem type, agent)
+   - These define how to build the artifact
+
+When building, use both files:
+```bash
+sudo fledge build --config example.toml --manifest example-manifest.toml
+```
 
 ## Initramfs Examples
 

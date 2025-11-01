@@ -34,6 +34,117 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// LoadManifestTemplate reads and parses a manifest.toml template file.
+// This file defines runtime defaults that can be overridden at VM creation time.
+func LoadManifestTemplate(path string) (*ManifestTemplate, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read manifest template %s: %w", path, err)
+	}
+
+	var tpl ManifestTemplate
+	if err := toml.Unmarshal(data, &tpl); err != nil {
+		return nil, fmt.Errorf("failed to parse manifest TOML: %w", err)
+	}
+
+	// Apply defaults for missing fields
+	if err := applyManifestDefaults(&tpl); err != nil {
+		return nil, fmt.Errorf("failed to apply manifest defaults: %w", err)
+	}
+
+	// Validate manifest template
+	if err := ValidateManifestTemplate(&tpl); err != nil {
+		return nil, fmt.Errorf("manifest validation failed: %w", err)
+	}
+
+	return &tpl, nil
+}
+
+// applyManifestDefaults applies default values to the manifest template.
+func applyManifestDefaults(tpl *ManifestTemplate) error {
+	// Default schema version
+	if tpl.SchemaVersion == "" {
+		tpl.SchemaVersion = "v1"
+	}
+
+	// Default resources if not specified
+	if tpl.Resources == nil {
+		tpl.Resources = &ResourcesConfig{
+			CPUCores: 1,
+			MemoryMB: 256,
+		}
+	}
+
+	// Default network mode
+	if tpl.Network != nil && tpl.Network.Mode == "" {
+		tpl.Network.Mode = "bridged"
+	}
+
+	// Default protocol for port mappings
+	if tpl.Network != nil {
+		for i := range tpl.Network.Expose {
+			if tpl.Network.Expose[i].Protocol == "" {
+				tpl.Network.Expose[i].Protocol = "tcp"
+			}
+		}
+	}
+
+	return nil
+}
+
+// ValidateManifestTemplate validates a manifest template.
+func ValidateManifestTemplate(tpl *ManifestTemplate) error {
+	if tpl.SchemaVersion == "" {
+		return fmt.Errorf("schema_version is required")
+	}
+
+	if tpl.SchemaVersion != "v1" {
+		return fmt.Errorf("unsupported schema_version %q (expected \"v1\")", tpl.SchemaVersion)
+	}
+
+	if tpl.Name == "" {
+		return fmt.Errorf("name is required")
+	}
+
+	if tpl.Version == "" {
+		return fmt.Errorf("version is required")
+	}
+
+	if tpl.Runtime == "" {
+		return fmt.Errorf("runtime is required")
+	}
+
+	// Validate resources if specified
+	if tpl.Resources != nil {
+		if tpl.Resources.CPUCores < 1 {
+			return fmt.Errorf("resources.cpu_cores must be >= 1")
+		}
+		if tpl.Resources.MemoryMB < 128 {
+			return fmt.Errorf("resources.memory_mb must be >= 128")
+		}
+	}
+
+	// Validate network mode if specified
+	if tpl.Network != nil {
+		validModes := map[string]bool{"bridged": true, "vsock": true, "dhcp": true}
+		if !validModes[tpl.Network.Mode] {
+			return fmt.Errorf("invalid network.mode %q (must be bridged, vsock, or dhcp)", tpl.Network.Mode)
+		}
+
+		// Validate port mappings
+		for i, port := range tpl.Network.Expose {
+			if port.Port < 1 || port.Port > 65535 {
+				return fmt.Errorf("network.expose[%d].port must be 1-65535", i)
+			}
+			if port.Protocol != "tcp" && port.Protocol != "udp" && port.Protocol != "" {
+				return fmt.Errorf("network.expose[%d].protocol must be tcp or udp", i)
+			}
+		}
+	}
+
+	return nil
+}
+
 // applyDefaults applies default values for optional fields.
 func applyDefaults(cfg *Config) error {
 	// Apply default agent config for initramfs if not provided

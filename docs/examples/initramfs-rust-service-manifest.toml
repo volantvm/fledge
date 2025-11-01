@@ -1,0 +1,28 @@
+# Runtime Defaults for Rust Microservice
+#
+# This manifest defines the default runtime behavior for the Rust microservice.
+# These defaults can be overridden at VM creation time with volar flags.
+
+schema_version = "v1"
+name = "rust-service"
+version = "1.0.0"
+runtime = "rust-service"
+
+[resources]
+cpu_cores = 2
+memory_mb = 256
+
+[workload]
+entrypoint = "/usr/bin/my-service"
+args = ["--config", "/etc/my-service/config.toml"]
+
+[env]
+RUST_LOG = "info"
+SERVICE_PORT = "8080"
+
+[network]
+mode = "bridged"
+
+[[network.expose]]
+port = 8080
+protocol = "tcp"

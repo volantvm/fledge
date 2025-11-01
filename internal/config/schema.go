@@ -103,3 +103,84 @@ const (
 	DefaultBusyboxURL    = "https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"
 	DefaultBusyboxSHA256 = "6e123e7f3202a8c1e9b1f94d8941580a25135382b99e8d3e34fb858bba311348"
 )
+
+// ManifestTemplate represents the runtime configuration template (manifest.toml).
+// This defines DEFAULT runtime behavior that can be overridden at VM creation time.
+// This is the SOURCE file (manifest.toml) that gets merged with build metadata
+// to produce the final manifest.json.
+type ManifestTemplate struct {
+	SchemaVersion string                 `toml:"schema_version"`
+	Name          string                 `toml:"name"`
+	Version       string                 `toml:"version"`
+	Runtime       string                 `toml:"runtime"`
+	Resources     *ResourcesConfig       `toml:"resources,omitempty"`
+	Workload      *WorkloadConfig        `toml:"workload,omitempty"`
+	Env           map[string]string      `toml:"env,omitempty"`
+	Network       *NetworkConfig         `toml:"network,omitempty"`
+	Actions       map[string]ActionConfig `toml:"actions,omitempty"`
+	CloudInit     *CloudInitConfig       `toml:"cloud_init,omitempty"`
+	Devices       *DevicesConfig         `toml:"devices,omitempty"`
+}
+
+// ResourcesConfig defines default CPU and memory requirements.
+type ResourcesConfig struct {
+	CPUCores int `toml:"cpu_cores"`
+	MemoryMB int `toml:"memory_mb"`
+}
+
+// WorkloadConfig defines the workload entrypoint and args.
+type WorkloadConfig struct {
+	Entrypoint string   `toml:"entrypoint"`
+	Args       []string `toml:"args,omitempty"`
+}
+
+// NetworkConfig defines network configuration.
+type NetworkConfig struct {
+	Mode   string               `toml:"mode"` // "bridged", "vsock", "dhcp"
+	Expose []PortMappingConfig  `toml:"expose,omitempty"`
+}
+
+// PortMappingConfig defines a port mapping.
+type PortMappingConfig struct {
+	Port     int    `toml:"port"`
+	Protocol string `toml:"protocol,omitempty"` // "tcp" or "udp", defaults to "tcp"
+	HostPort int    `toml:"host_port,omitempty"`
+}
+
+// ActionConfig defines a custom action endpoint.
+type ActionConfig struct {
+	Path   string `toml:"path"`
+	Method string `toml:"method"`
+}
+
+// CloudInitConfig defines cloud-init configuration.
+type CloudInitConfig struct {
+	Datasource string                 `toml:"datasource,omitempty"` // "nocloud", etc.
+	UserData   *CloudInitUserData     `toml:"user_data,omitempty"`
+	MetaData   map[string]interface{} `toml:"meta_data,omitempty"`
+}
+
+// CloudInitUserData defines cloud-init user-data.
+type CloudInitUserData struct {
+	Inline  bool   `toml:"inline,omitempty"`
+	Content string `toml:"content,omitempty"`
+}
+
+// DevicesConfig defines device passthrough configuration.
+type DevicesConfig struct {
+	PCIPassthrough []string `toml:"pci_passthrough,omitempty"`
+}
+
+// DefaultManifestTemplate returns a minimal manifest template with sensible defaults.
+func DefaultManifestTemplate() *ManifestTemplate {
+	return &ManifestTemplate{
+		SchemaVersion: "v1",
+		Resources: &ResourcesConfig{
+			CPUCores: 1,
+			MemoryMB: 256,
+		},
+		Network: &NetworkConfig{
+			Mode: "bridged",
+		},
+	}
+}

@@ -1,0 +1,20 @@
+# Runtime Defaults for Minimal Initramfs
+#
+# This manifest defines the default runtime behavior for the minimal initramfs image.
+# These defaults can be overridden at VM creation time with volar flags.
+
+schema_version = "v1"
+name = "minimal"
+version = "1.0.0"
+runtime = "minimal"
+
+[resources]
+cpu_cores = 1
+memory_mb = 128
+
+[workload]
+# No custom workload - kestrel agent manages lifecycle
+entrypoint = ""
+
+[network]
+mode = "vsock"

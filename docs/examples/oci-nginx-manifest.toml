@@ -1,0 +1,32 @@
+# Runtime Defaults for Nginx Web Server
+#
+# This manifest defines the default runtime behavior when running the nginx image.
+# These defaults can be overridden at VM creation time with volar flags.
+
+schema_version = "v1"
+name = "nginx"
+version = "1.0.0"
+runtime = "nginx"
+
+[resources]
+cpu_cores = 2
+memory_mb = 512
+
+[workload]
+entrypoint = "/usr/sbin/nginx"
+args = ["-g", "daemon off;"]
+
+[env]
+NGINX_WORKER_PROCESSES = "auto"
+NGINX_WORKER_CONNECTIONS = "1024"
+
+[network]
+mode = "bridged"
+
+[[network.expose]]
+port = 80
+protocol = "tcp"
+
+[[network.expose]]
+port = 443
+protocol = "tcp"

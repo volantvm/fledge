@@ -3,6 +3,7 @@ package builder
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -35,25 +36,27 @@ type OCIDescriptor struct {
 
 // OCIRootfsBuilder builds OCI rootfs filesystem images.
 type OCIRootfsBuilder struct {
-	Config         *config.Config
-	WorkDir        string
-	OutputPath     string
-	TempDir        string
-	OciLayoutPath  string
-	UnpackedPath   string
-	ImagePath      string
-	MountPoint     string
-	LoopDevicePath string
-	EphemeralTag   string
-	RootfsReady    bool
+	Config          *config.Config
+	ManifestTpl     *config.ManifestTemplate
+	WorkDir         string
+	OutputPath      string
+	TempDir         string
+	OciLayoutPath   string
+	UnpackedPath    string
+	ImagePath       string
+	MountPoint      string
+	LoopDevicePath  string
+	EphemeralTag    string
+	RootfsReady     bool
 }
 
 // NewOCIRootfsBuilder creates a new OCI rootfs builder.
-func NewOCIRootfsBuilder(cfg *config.Config, workDir, outputPath string) *OCIRootfsBuilder {
+func NewOCIRootfsBuilder(cfg *config.Config, manifestTpl *config.ManifestTemplate, workDir, outputPath string) *OCIRootfsBuilder {
 	return &OCIRootfsBuilder{
-		Config:     cfg,
-		WorkDir:    workDir,
-		OutputPath: outputPath,
+		Config:      cfg,
+		ManifestTpl: manifestTpl,
+		WorkDir:     workDir,
+		OutputPath:  outputPath,
 	}
 }
 
@@ -154,6 +157,12 @@ func (b *OCIRootfsBuilder) Build() error {
 		if err := step.fn(); err != nil {
 			return fmt.Errorf("%s failed: %w", step.name, err)
 		}
+	}
+
+	// Generate manifest.json (merge template + build metadata)
+	logging.Info("Generating manifest.json")
+	if err := b.generateManifest(); err != nil {
+		return fmt.Errorf("manifest generation failed: %w", err)
 	}
 
 	logging.Info("OCI rootfs build complete", "output", b.OutputPath)
@@ -946,4 +955,150 @@ func (b *OCIRootfsBuilder) buildDockerfileIfNeeded() error {
 	b.RootfsReady = true
 	logging.Info("Dockerfile build complete via BuildKit; rootfs prepared")
 	return nil
+}
+
+// generateManifest creates the final manifest.json by merging the template with build metadata.
+// Output: <outputPath>.manifest.json (e.g., myapp-rootfs.img.manifest.json)
+func (b *OCIRootfsBuilder) generateManifest() error {
+	// Compute checksum of the built artifact
+	checksum, err := computeSHA256(b.OutputPath)
+	if err != nil {
+		return fmt.Errorf("failed to compute artifact checksum: %w", err)
+	}
+
+	// Determine artifact format from filesystem config
+	format := b.Config.Filesystem.Type
+	if format == "" {
+		format = "squashfs" // default
+	}
+
+	// Build the final manifest by merging template + build metadata
+	manifest := map[string]interface{}{
+		"schema_version": b.ManifestTpl.SchemaVersion,
+		"name":           b.ManifestTpl.Name,
+		"version":        b.ManifestTpl.Version,
+		"runtime":        b.ManifestTpl.Runtime,
+	}
+
+	// Add rootfs section (build metadata)
+	manifest["rootfs"] = map[string]interface{}{
+		"url":      "file://" + b.OutputPath, // Local file URL
+		"format":   format,
+		"checksum": "sha256:" + checksum,
+	}
+
+	// Add resources from template (runtime defaults)
+	if b.ManifestTpl.Resources != nil {
+		manifest["resources"] = map[string]interface{}{
+			"cpu_cores": b.ManifestTpl.Resources.CPUCores,
+			"memory_mb": b.ManifestTpl.Resources.MemoryMB,
+		}
+	}
+
+	// Add workload from template
+	if b.ManifestTpl.Workload != nil {
+		workload := map[string]interface{}{
+			"entrypoint": b.ManifestTpl.Workload.Entrypoint,
+		}
+		if len(b.ManifestTpl.Workload.Args) > 0 {
+			workload["args"] = b.ManifestTpl.Workload.Args
+		}
+		manifest["workload"] = workload
+	}
+
+	// Add environment variables from template
+	if len(b.ManifestTpl.Env) > 0 {
+		manifest["env"] = b.ManifestTpl.Env
+	}
+
+	// Add network config from template
+	if b.ManifestTpl.Network != nil {
+		network := map[string]interface{}{
+			"mode": b.ManifestTpl.Network.Mode,
+		}
+		if len(b.ManifestTpl.Network.Expose) > 0 {
+			expose := make([]map[string]interface{}, len(b.ManifestTpl.Network.Expose))
+			for i, port := range b.ManifestTpl.Network.Expose {
+				expose[i] = map[string]interface{}{
+					"port":     port.Port,
+					"protocol": port.Protocol,
+				}
+				if port.HostPort > 0 {
+					expose[i]["host_port"] = port.HostPort
+				}
+			}
+			network["expose"] = expose
+		}
+		manifest["network"] = network
+	}
+
+	// Add actions from template
+	if len(b.ManifestTpl.Actions) > 0 {
+		actions := make(map[string]interface{})
+		for name, action := range b.ManifestTpl.Actions {
+			actions[name] = map[string]interface{}{
+				"path":   action.Path,
+				"method": action.Method,
+			}
+		}
+		manifest["actions"] = actions
+	}
+
+	// Add cloud-init from template
+	if b.ManifestTpl.CloudInit != nil {
+		cloudInit := make(map[string]interface{})
+		if b.ManifestTpl.CloudInit.Datasource != "" {
+			cloudInit["datasource"] = b.ManifestTpl.CloudInit.Datasource
+		}
+		if b.ManifestTpl.CloudInit.UserData != nil {
+			cloudInit["user_data"] = map[string]interface{}{
+				"inline":  b.ManifestTpl.CloudInit.UserData.Inline,
+				"content": b.ManifestTpl.CloudInit.UserData.Content,
+			}
+		}
+		if len(b.ManifestTpl.CloudInit.MetaData) > 0 {
+			cloudInit["meta_data"] = b.ManifestTpl.CloudInit.MetaData
+		}
+		if len(cloudInit) > 0 {
+			manifest["cloud_init"] = cloudInit
+		}
+	}
+
+	// Add devices from template
+	if b.ManifestTpl.Devices != nil && len(b.ManifestTpl.Devices.PCIPassthrough) > 0 {
+		manifest["devices"] = map[string]interface{}{
+			"pci_passthrough": b.ManifestTpl.Devices.PCIPassthrough,
+		}
+	}
+
+	// Marshal to JSON with indentation (production-ready formatting)
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal manifest: %w", err)
+	}
+
+	// Write to <outputPath>.manifest.json
+	manifestPath := b.OutputPath + ".manifest.json"
+	if err := os.WriteFile(manifestPath, manifestJSON, 0644); err != nil {
+		return fmt.Errorf("failed to write manifest file: %w", err)
+	}
+
+	logging.Info("Manifest generated", "path", manifestPath, "checksum", checksum[:16]+"...")
+	return nil
+}
+
+// computeSHA256 computes the SHA256 checksum of a file.
+func computeSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }

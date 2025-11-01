@@ -1,0 +1,23 @@
+# Test manifest.toml - Runtime defaults
+schema_version = "v1"
+name = "test-nginx"
+version = "1.0.0"
+runtime = "nginx"
+
+[resources]
+cpu_cores = 2
+memory_mb = 512
+
+[workload]
+entrypoint = "/usr/sbin/nginx"
+args = ["-g", "daemon off;"]
+
+[env]
+NGINX_WORKER_PROCESSES = "auto"
+
+[network]
+mode = "bridged"
+
+[[network.expose]]
+port = 80
+protocol = "tcp"

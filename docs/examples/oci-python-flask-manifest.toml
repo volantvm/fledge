@@ -1,0 +1,30 @@
+# Runtime Defaults for Python Flask Application
+#
+# This manifest defines the default runtime behavior for the Flask web app.
+# These defaults can be overridden at VM creation time with volar flags.
+
+schema_version = "v1"
+name = "flask-app"
+version = "1.0.0"
+runtime = "python-flask"
+
+[resources]
+cpu_cores = 1
+memory_mb = 512
+
+[workload]
+entrypoint = "/usr/local/bin/python"
+args = ["/opt/app/server.py"]
+
+[env]
+FLASK_APP = "/opt/app/server.py"
+FLASK_ENV = "production"
+PYTHONUNBUFFERED = "1"
+WORKERS = "4"
+
+[network]
+mode = "bridged"
+
+[[network.expose]]
+port = 5000
+protocol = "tcp"
