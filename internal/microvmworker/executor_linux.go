@@ -512,7 +512,7 @@ func (e *Executor) buildInitramfs(ctx context.Context, vmName string) (string, f
 	}
 
 	outputPath := filepath.Join(e.supportDir, fmt.Sprintf("initramfs-%s-%d.cpio.gz", vmName, time.Now().UnixNano()))
-	b := builder.NewInitramfsBuilder(cfg, e.supportDir, outputPath)
+	b := builder.NewInitramfsBuilder(cfg, nil, e.supportDir, outputPath)
 	b.BusyboxLocalPath = busyboxHostPath
 
 	if err := b.Build(); err != nil {
