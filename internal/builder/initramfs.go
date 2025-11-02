@@ -838,8 +838,14 @@ func (b *InitramfsBuilder) generateManifest() error {
 
 	// Add build metadata - initramfs section
 	// The initramfs format is always cpio.gz for this builder
+	// Convert OutputPath to absolute path for manifest
+	absOutputPath, err := filepath.Abs(b.OutputPath)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path: %w", err)
+	}
+
 	manifest["initramfs"] = map[string]interface{}{
-		"url":      "file://" + b.OutputPath,
+		"url":      "file://" + absOutputPath, // Local file URL with absolute path
 		"format":   "cpio.gz",
 		"checksum": "sha256:" + checksum,
 	}
