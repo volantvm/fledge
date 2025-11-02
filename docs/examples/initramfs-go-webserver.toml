@@ -1,7 +1,7 @@
-# Initramfs Plugin with Go Web Server
+# Initramfs Image with Go Web Server
 #
-# This example shows how to package a Go web application as an initramfs plugin.
-# 
+# This example shows how to package a Go web application as an initramfs image.
+#
 # Project structure:
 #   my-webserver/
 #   ├── fledge.toml (this file)

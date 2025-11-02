@@ -13,16 +13,16 @@
 
 # Fledge
 
-**Volant Plugin Builder**
+**Volant Image Builder**
 
-Fledge is the plugin builder, the toolkit for creating the boot artifacts referenced in Volant plugins.
+Fledge is the image builder, the toolkit for creating the boot artifacts referenced in Volant images.
 It helps to streamline the process of building either an initramfs with your own payload(preferably a static binary), or a rootfs from a Docker image, which also supports injecting your own payload.
 
 The recipe for building your artifact is defined in a `fledge.toml` file.
-There are two kinds of configuration files for Volant plugins: `manifest.json` and `fledge.toml`
+There are two kinds of configuration files for Volant images: `manifest.json` and `fledge.toml`
 
 This guide is focused on the 'fledge.toml' configuration file, as this repository is focused on the stage of building the artifact.
-If you are looking for the 'manifest.json' configuration file, meaning if you do not intend to build the artifact yourself and only want to install a pre-made plugin, please refer to [initramfs-plugin-example](https://github.com/volantvm/initramfs-plugin-example)(caddy) or [oci-plugin-example](https://github.com/volantvm/oci-plugin-example)(nginx)
+If you are looking for the 'manifest.json' configuration file, meaning if you do not intend to build the artifact yourself and only want to install a pre-made image, please refer to [initramfs-image-example](https://github.com/volantvm/initramfs-image-example)(caddy) or [oci-image-example](https://github.com/volantvm/oci-image-example)(nginx)
 
 
 Let's get started on building the artifact.
@@ -37,7 +37,7 @@ curl -LO https://github.com/volantvm/fledge/releases/latest/download/fledge-linu
 chmod +x fledge-linux-amd64 && sudo mv fledge-linux-amd64 /usr/local/bin/fledge
 ```
 
-### Build an OCI-based plugin
+### Build an OCI-based image
 
 Fledge uses two configuration files:
 - **`fledge.toml`** - Build-time config (image source, filesystem type, agent sourcing)
@@ -159,8 +159,8 @@ Flags available in direct-build mode:
 ### Install and run it
 
 ```bash
-volar plugins install --manifest nginx.manifest.json
-volar vms create web --plugin nginx
+volar images install --manifest nginx.manifest.json
+volar vms create web --image nginx
 ```
 
 Boots a real VM—networked, isolated, live in seconds.
@@ -322,7 +322,7 @@ This file contains **runtime defaults** - how the image should run by default in
 | `[workload]` | `type = "exec"` (or "http"/"grpc"), `entrypoint = ["/usr/sbin/nginx", "-g", "daemon off;"]` | Workload type and command with args |
 | `[network]` | `mode = "bridged"`, `expose = [{ port = 80, protocol = "tcp" }]` | Network mode and exposed ports |
 | `[env]` | `LOG_LEVEL = "info"`, `WORKERS = "4"` | Default environment variables |
-| `[actions]` | Custom API actions (advanced) | Plugin-specific actions |
+| `[actions]` | Custom API actions (advanced) | Image-specific actions |
 
 **Note:** These defaults can be overridden at VM creation time via `volar vms create` flags.
 
@@ -372,7 +372,7 @@ Fledge supports three init modes for initramfs. See [docs/init-modes.md](docs/in
 
 **Business Source License 1.1**
 
-- Free for plugin development and evaluation
+- Free for image development and evaluation
 - Commercial use requires a license
 - Converts to Apache 2.0 on Oct 4 2029
 

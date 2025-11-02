@@ -1,6 +1,6 @@
-# OCI Rootfs Plugin: Nginx Web Server
+# OCI Rootfs Image: Nginx Web Server
 #
-# This example converts the official Nginx Alpine image to a Volant plugin.
+# This example converts the official Nginx Alpine image to a Volant image.
 # The result is a bootable ext4 filesystem image with Nginx and the kestrel agent.
 #
 # Optional: Customize Nginx by mapping your own nginx.conf

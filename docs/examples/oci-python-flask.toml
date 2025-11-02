@@ -1,4 +1,4 @@
-# OCI Rootfs Plugin: Python Flask Application
+# OCI Rootfs Image: Python Flask Application
 #
 # This example shows how to package a Python Flask web application.
 #

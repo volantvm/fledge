@@ -1,9 +1,9 @@
-# Minimal Initramfs Plugin Example
+# Minimal Initramfs Image Example
 #
-# This is the simplest possible initramfs plugin configuration.
+# This is the simplest possible initramfs image configuration.
 # It creates a bootable initramfs with only busybox and the kestrel agent.
 #
-# Perfect for: Testing, learning, or as a starting point for custom plugins
+# Perfect for: Testing, learning, or as a starting point for custom images
 
 version = "1"
 strategy = "initramfs"

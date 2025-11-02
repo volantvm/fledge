@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Initial Release
 
-First public release of Fledge, the Volant Plugin Builder toolkit.
+First public release of Fledge, the Volant Image Builder toolkit.
 
 ### Added
 
@@ -52,7 +52,7 @@ First public release of Fledge, the Volant Plugin Builder toolkit.
 - Mtime normalization for reproducible builds
 - 8-step build pipeline with progress logging
 
-#### OCI Rootfs Builder  
+#### OCI Rootfs Builder
 - Skopeo integration for image download (Docker daemon + remote registry fallback)
 - Umoci integration for layer unpacking
 - OCI config extraction to `/etc/fsify-entrypoint`
@@ -74,7 +74,7 @@ First public release of Fledge, the Volant Plugin Builder toolkit.
 - Smart output path generation from image names
 
 #### Documentation
-- Comprehensive README as plugin authoring guide
+- Comprehensive README as image authoring guide
 - 6 example configurations for common use cases:
   - Minimal initramfs
   - Go web server (initramfs)

@@ -1,7 +1,7 @@
-# OCI Rootfs Plugin: PostgreSQL Database
+# OCI Rootfs Image: PostgreSQL Database
 #
-# This example creates a PostgreSQL plugin from the official Postgres Alpine image.
-# 
+# This example creates a PostgreSQL image from the official Postgres Alpine image.
+#
 # Note: Databases may require persistent storage configuration at runtime.
 # This creates the base image; Volant handles volume mounting and persistence.
 

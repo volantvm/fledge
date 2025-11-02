@@ -174,7 +174,7 @@ func defaultOutput(cfg *config.Config) string {
     case config.StrategyInitramfs:
         ext = ".cpio.gz"
     }
-    base := "plugin"
+    base := "image"
     if cfg.Strategy == config.StrategyOCIRootfs && cfg.Source.Image != "" {
         s := cfg.Source.Image
         if i := strings.LastIndex(s, ":"); i > 0 {

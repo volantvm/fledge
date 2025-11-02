@@ -1,6 +1,6 @@
-# Initramfs Plugin: Rust Microservice
+# Initramfs Image: Rust Microservice
 #
-# This example packages a Rust microservice as an initramfs plugin.
+# This example packages a Rust microservice as an initramfs image.
 #
 # Build your Rust app as a static binary:
 #   cargo build --release --target x86_64-unknown-linux-musl
