@@ -845,7 +845,7 @@ func (b *InitramfsBuilder) generateManifest() error {
 	}
 
 	manifest["initramfs"] = map[string]interface{}{
-		"url":      "file://" + absOutputPath, // Local file URL with absolute path
+		"url":      absOutputPath, // Absolute path (Volant uses os.Open directly, no file:// protocol)
 		"format":   "cpio.gz",
 		"checksum": "sha256:" + checksum,
 	}

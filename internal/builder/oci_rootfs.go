@@ -990,7 +990,7 @@ func (b *OCIRootfsBuilder) generateManifest() error {
 	}
 
 	manifest["rootfs"] = map[string]interface{}{
-		"url":      "file://" + absOutputPath, // Local file URL with absolute path
+		"url":      absOutputPath, // Absolute path (Volant uses os.Open directly, no file:// protocol)
 		"format":   format,
 		"checksum": "sha256:" + checksum,
 	}
