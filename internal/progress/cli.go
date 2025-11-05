@@ -2,7 +2,6 @@ package progress
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"sync"
