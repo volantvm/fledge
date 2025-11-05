@@ -17,6 +17,7 @@ import (
 	_ "github.com/volantvm/fledge/internal/buildkit"
 	"github.com/volantvm/fledge/internal/config"
 	"github.com/volantvm/fledge/internal/logging"
+	"github.com/volantvm/fledge/internal/progress"
 	"github.com/volantvm/fledge/internal/server"
 )
 
