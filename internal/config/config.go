@@ -89,6 +89,18 @@ func applyManifestDefaults(tpl *ManifestTemplate) error {
 		}
 	}
 
+	// Auto-generate base_url for http workloads if not specified
+	if tpl.Workload != nil && tpl.Workload.Type == "http" && tpl.Workload.BaseURL == "" {
+		port := 80 // Default HTTP port
+
+		// Try to infer port from network.expose
+		if tpl.Network != nil && len(tpl.Network.Expose) > 0 {
+			port = tpl.Network.Expose[0].Port
+		}
+
+		tpl.Workload.BaseURL = fmt.Sprintf("http://localhost:%d", port)
+	}
+
 	return nil
 }
 
@@ -131,10 +143,8 @@ func ValidateManifestTemplate(tpl *ManifestTemplate) error {
 			return fmt.Errorf("invalid workload.type %q (must be exec, http, or grpc)", tpl.Workload.Type)
 		}
 
-		// HTTP workloads require base_url for health checks
-		if tpl.Workload.Type == "http" && tpl.Workload.BaseURL == "" {
-			return fmt.Errorf("workload.base_url is required for http workloads (e.g., \"http://localhost:3000\")")
-		}
+		// base_url is auto-generated for http workloads if not specified
+		// Users can override for custom health check endpoints
 
 		if len(tpl.Workload.Entrypoint) == 0 {
 			return fmt.Errorf("workload.entrypoint is required")

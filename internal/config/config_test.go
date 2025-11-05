@@ -364,6 +364,114 @@ busybox_url = "https://test.com/busybox"
 	}
 }
 
+// TestManifestTemplateBaseURLAutoGeneration tests that base_url is auto-generated for http workloads.
+func TestManifestTemplateBaseURLAutoGeneration(t *testing.T) {
+	// Test 1: base_url auto-generated from first exposed port
+	tpl := &ManifestTemplate{
+		SchemaVersion: "v1",
+		Name:          "test",
+		Version:       "1.0.0",
+		Runtime:       "test",
+		Workload: &WorkloadConfig{
+			Type:       "http",
+			Entrypoint: []string{"/app/server"},
+		},
+		Network: &NetworkConfig{
+			Mode: "bridged",
+			Expose: []PortMappingConfig{
+				{Port: 3000, Protocol: "tcp"},
+			},
+		},
+	}
+
+	if err := applyManifestDefaults(tpl); err != nil {
+		t.Fatalf("applyManifestDefaults failed: %v", err)
+	}
+
+	expectedURL := "http://localhost:3000"
+	if tpl.Workload.BaseURL != expectedURL {
+		t.Errorf("expected base_url to be auto-generated as %q, got %q", expectedURL, tpl.Workload.BaseURL)
+	}
+
+	// Test 2: base_url defaults to port 80 if no ports exposed
+	tpl2 := &ManifestTemplate{
+		SchemaVersion: "v1",
+		Name:          "test",
+		Version:       "1.0.0",
+		Runtime:       "test",
+		Workload: &WorkloadConfig{
+			Type:       "http",
+			Entrypoint: []string{"/app/server"},
+		},
+		Network: &NetworkConfig{
+			Mode: "bridged",
+		},
+	}
+
+	if err := applyManifestDefaults(tpl2); err != nil {
+		t.Fatalf("applyManifestDefaults failed: %v", err)
+	}
+
+	expectedURL2 := "http://localhost:80"
+	if tpl2.Workload.BaseURL != expectedURL2 {
+		t.Errorf("expected base_url to default to %q, got %q", expectedURL2, tpl2.Workload.BaseURL)
+	}
+
+	// Test 3: base_url not overridden if already specified
+	tpl3 := &ManifestTemplate{
+		SchemaVersion: "v1",
+		Name:          "test",
+		Version:       "1.0.0",
+		Runtime:       "test",
+		Workload: &WorkloadConfig{
+			Type:       "http",
+			Entrypoint: []string{"/app/server"},
+			BaseURL:    "http://localhost:8080/health",
+		},
+		Network: &NetworkConfig{
+			Mode: "bridged",
+			Expose: []PortMappingConfig{
+				{Port: 3000, Protocol: "tcp"},
+			},
+		},
+	}
+
+	if err := applyManifestDefaults(tpl3); err != nil {
+		t.Fatalf("applyManifestDefaults failed: %v", err)
+	}
+
+	expectedURL3 := "http://localhost:8080/health"
+	if tpl3.Workload.BaseURL != expectedURL3 {
+		t.Errorf("expected base_url to remain %q, got %q", expectedURL3, tpl3.Workload.BaseURL)
+	}
+
+	// Test 4: base_url NOT auto-generated for non-http workloads
+	tpl4 := &ManifestTemplate{
+		SchemaVersion: "v1",
+		Name:          "test",
+		Version:       "1.0.0",
+		Runtime:       "test",
+		Workload: &WorkloadConfig{
+			Type:       "exec",
+			Entrypoint: []string{"/app/server"},
+		},
+		Network: &NetworkConfig{
+			Mode: "bridged",
+			Expose: []PortMappingConfig{
+				{Port: 3000, Protocol: "tcp"},
+			},
+		},
+	}
+
+	if err := applyManifestDefaults(tpl4); err != nil {
+		t.Fatalf("applyManifestDefaults failed: %v", err)
+	}
+
+	if tpl4.Workload.BaseURL != "" {
+		t.Errorf("expected base_url to remain empty for exec workload, got %q", tpl4.Workload.BaseURL)
+	}
+}
+
 // writeTempConfig writes a temporary config file for testing.
 func writeTempConfig(t *testing.T, content string) string {
 	t.Helper()
