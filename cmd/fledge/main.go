@@ -202,8 +202,16 @@ func newServeCommand() *cobra.Command {
 				manifestTpl := config.DefaultManifestTemplate()
 				return buildInitramfs(ctx, cfg, manifestTpl, workDir, output)
 			}
+			buildWithProgressFn := func(ctx context.Context, cfg *config.Config, workDir, output string, tracker *progress.Tracker) error {
+				manifestTpl := config.DefaultManifestTemplate()
+				return buildOCIRootfsWithProgress(ctx, cfg, manifestTpl, workDir, output, tracker)
+			}
+			initramfsWithProgressFn := func(ctx context.Context, cfg *config.Config, workDir, output string, tracker *progress.Tracker) error {
+				manifestTpl := config.DefaultManifestTemplate()
+				return buildInitramfsWithProgress(ctx, cfg, manifestTpl, workDir, output, tracker)
+			}
 
-			return server.Start(ctx, opts, buildFn, initramfsFn)
+			return server.Start(ctx, opts, buildFn, initramfsFn, buildWithProgressFn, initramfsWithProgressFn)
 		},
 	}
 
