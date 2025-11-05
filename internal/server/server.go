@@ -11,6 +11,7 @@ import (
 
     "github.com/volantvm/fledge/internal/config"
     "github.com/volantvm/fledge/internal/logging"
+    "github.com/volantvm/fledge/internal/progress"
 )
 
 type Options struct {
@@ -29,7 +30,14 @@ type buildResponse struct {
 }
 
 // Start launches the HTTP server and blocks until the context is done or the server exits.
-func Start(ctx context.Context, opts Options, buildFn func(ctx context.Context, cfg *config.Config, workDir, output string) error, initramfsFn func(ctx context.Context, cfg *config.Config, workDir, output string) error) error {
+func Start(
+	ctx context.Context,
+	opts Options,
+	buildFn func(ctx context.Context, cfg *config.Config, workDir, output string) error,
+	initramfsFn func(ctx context.Context, cfg *config.Config, workDir, output string) error,
+	buildWithProgressFn func(ctx context.Context, cfg *config.Config, workDir, output string, tracker *progress.Tracker) error,
+	initramfsWithProgressFn func(ctx context.Context, cfg *config.Config, workDir, output string, tracker *progress.Tracker) error,
+) error {
     mux := http.NewServeMux()
 
     wrap := func(h http.HandlerFunc) http.HandlerFunc {
@@ -100,6 +108,87 @@ func Start(ctx context.Context, opts Options, buildFn func(ctx context.Context, 
         }
 
         json.NewEncoder(w).Encode(buildResponse{Output: output})
+    }))
+
+    // Streaming build endpoint with Server-Sent Events
+    mux.HandleFunc("/v1/build/stream", wrap(func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost {
+            http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+            return
+        }
+
+        var req buildRequest
+        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+            http.Error(w, "invalid json", http.StatusBadRequest)
+            return
+        }
+
+        if req.ConfigPath == "" {
+            http.Error(w, "config_path required", http.StatusBadRequest)
+            return
+        }
+
+        cfg, err := config.Load(req.ConfigPath)
+        if err != nil {
+            http.Error(w, fmt.Sprintf("config error: %v", err), http.StatusBadRequest)
+            return
+        }
+
+        workDir := dirOf(req.ConfigPath)
+        output := req.OutputPath
+        if output == "" {
+            output = defaultOutput(cfg)
+        }
+
+        // Set up SSE headers
+        w.Header().Set("Content-Type", "text/event-stream")
+        w.Header().Set("Cache-Control", "no-cache")
+        w.Header().Set("Connection", "keep-alive")
+        w.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering
+
+        // Create progress tracker
+        tracker := progress.NewTracker()
+        tracker.AddWriter(w)
+
+        // Send initial start event
+        strategy := "OCI rootfs"
+        if cfg.Strategy == config.StrategyInitramfs {
+            strategy = "initramfs"
+        }
+        tracker.Start(strategy)
+
+        // Flush to ensure client receives the start event
+        if f, ok := w.(http.Flusher); ok {
+            f.Flush()
+        }
+
+        ctx2, cancel := context.WithTimeout(ctx, 12*time.Hour)
+        defer cancel()
+
+        // Run build with progress tracking
+        var buildErr error
+        switch cfg.Strategy {
+        case config.StrategyOCIRootfs:
+            buildErr = buildWithProgressFn(ctx2, cfg, workDir, output, tracker)
+        case config.StrategyInitramfs:
+            buildErr = initramfsWithProgressFn(ctx2, cfg, workDir, output, tracker)
+        default:
+            tracker.Error(fmt.Errorf("unsupported strategy"), progress.StageValidation)
+            return
+        }
+
+        if buildErr != nil {
+            // Error is already reported by the build function
+            // Just ensure the final error event is sent
+            if tracker.CurrentStage() == "" {
+                tracker.Error(buildErr, progress.StageBuild)
+            }
+        }
+
+        // Flush final event
+        if f, ok := w.(http.Flusher); ok {
+            f.Flush()
+        }
     }))
 
     srv := &http.Server{
