@@ -75,8 +75,9 @@ cpu_cores = 2
 memory_mb = 512
 
 [workload]
-type = "exec"  # Can be "exec", "http", or "grpc"
+type = "http"  # Can be "exec", "http", or "grpc"
 entrypoint = ["/usr/sbin/nginx", "-g", "daemon off;"]
+base_url = "http://localhost:80"  # Required for http workloads (health check endpoint)
 
 [network]
 mode = "bridged"
@@ -319,7 +320,7 @@ This file contains **runtime defaults** - how the image should run by default in
 |---------|---------|---------|
 | Top-level | `schema_version = "v1"`, `name = "nginx"`, `version = "1.0.0"`, `runtime = "nginx"` | Required metadata |
 | `[resources]` | `cpu_cores = 2`, `memory_mb = 512` | **OPTIONAL**: Default CPU/memory (Fledge injects defaults if omitted: cpu_cores=2, memory_mb=2048) |
-| `[workload]` | `type = "exec"` (or "http"/"grpc"), `entrypoint = ["/usr/sbin/nginx", "-g", "daemon off;"]` | Workload type and command with args |
+| `[workload]` | `type = "exec"` (or "http"/"grpc"), `entrypoint = ["/usr/sbin/nginx", "-g", "daemon off;"]`, `base_url = "http://localhost:80"` (required for http type) | Workload type, command with args, and health check URL for http workloads |
 | `[network]` | `mode = "bridged"`, `expose = [{ port = 80, protocol = "tcp" }]` | Network mode and exposed ports |
 | `[env]` | `LOG_LEVEL = "info"`, `WORKERS = "4"` | Default environment variables |
 | `[actions]` | Custom API actions (advanced) | Image-specific actions |

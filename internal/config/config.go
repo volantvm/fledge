@@ -124,6 +124,23 @@ func ValidateManifestTemplate(tpl *ManifestTemplate) error {
 		}
 	}
 
+	// Validate workload if specified
+	if tpl.Workload != nil {
+		validTypes := map[string]bool{"exec": true, "http": true, "grpc": true}
+		if !validTypes[tpl.Workload.Type] {
+			return fmt.Errorf("invalid workload.type %q (must be exec, http, or grpc)", tpl.Workload.Type)
+		}
+
+		// HTTP workloads require base_url for health checks
+		if tpl.Workload.Type == "http" && tpl.Workload.BaseURL == "" {
+			return fmt.Errorf("workload.base_url is required for http workloads (e.g., \"http://localhost:3000\")")
+		}
+
+		if len(tpl.Workload.Entrypoint) == 0 {
+			return fmt.Errorf("workload.entrypoint is required")
+		}
+	}
+
 	// Validate network mode if specified
 	if tpl.Network != nil {
 		validModes := map[string]bool{"bridged": true, "vsock": true, "dhcp": true}
